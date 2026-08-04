@@ -200,16 +200,24 @@ class PromptRegistry:
                 self._cache[key] = _CacheEntry(fetched, time.time())
             return fetched
 
-        # Registry unreachable — prefer a stale value over no value.
+        # The fetch failed. Prefer a cached value over no value — but only a
+        # value that actually came from the registry is "stale". Re-serving a
+        # cached *fallback* is the ordinary steady state for a prompt nobody
+        # has registered yet, and reporting that as staleness sends people
+        # looking for a Langfuse outage that is not happening.
         with self._lock:
             entry = self._cache.get(key)
         if entry is not None:
-            logger.warning("watcher: serving stale prompt %r", name)
+            if entry.prompt.registered:
+                logger.warning(
+                    "watcher: serving a stale copy of prompt %r — the registry "
+                    "could not be reached", name,
+                )
             return ManagedPrompt(
                 name=entry.prompt.name, template=entry.prompt.template,
                 version=entry.prompt.version, labels=entry.prompt.labels,
                 config=entry.prompt.config, registered=entry.prompt.registered,
-                stale=True,
+                stale=entry.prompt.registered,
             )
 
         logger.warning("watcher: prompt %r unresolved, using fallback", name)

@@ -12,7 +12,7 @@ Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 [![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
 [![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 261 tests
+`Python 3.11+` · zero required dependencies · framework-agnostic · 263 tests
 
 ```bash
 pip install shipit-watcher
