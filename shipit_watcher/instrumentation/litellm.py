@@ -163,13 +163,55 @@ def _restore_context(payload: Any) -> Optional[TraceContext]:
     return TraceContext(**{k: v for k, v in payload.items() if k in fields})
 
 
+#: Keys the LiteLLM **proxy** reads from a request's metadata to decide where
+#: its own Langfuse trace goes. A gateway with server-side Langfuse logging
+#: cannot be silenced by a client — but it can be told which trace to join.
+#: Without these it opens an unparented ``litellm-acompletion`` beside every
+#: real trace, with no session and no user.
+_PROXY_TRACE_KEYS = ("existing_trace_id", "generation_name", "session_id",
+                     "trace_user_id")
+
+
 def _stamp(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach the calling thread's context to this request's metadata."""
-    if current_context().trace_id is None:
+    """Attach the calling thread's context to this request's metadata.
+
+    Two audiences, one envelope. ``_CONTEXT_KEY`` is for our own callback,
+    which may run on another thread. The Langfuse-shaped keys are for a
+    LiteLLM proxy that logs server-side: it reads them and attaches its
+    generation to this trace instead of opening its own.
+    """
+    context = current_context()
+    if context.trace_id is None:
         return kwargs
+
     metadata = dict(kwargs.get("metadata") or {})
     metadata.setdefault(_CONTEXT_KEY, _snapshot_context())
+
+    # setdefault throughout: a caller that named its own generation, or
+    # deliberately pointed at a different trace, is not overridden.
+    metadata.setdefault("existing_trace_id", context.trace_id)
+    metadata.setdefault("generation_name", _call_name(kwargs))
+    if context.session_id:
+        metadata.setdefault("session_id", context.session_id)
+    if context.user_id:
+        metadata.setdefault("trace_user_id", context.user_id)
+
     kwargs["metadata"] = metadata
+
+    # ...and again in extra_body, which is the only route to a *proxy*.
+    # `metadata` is not an OpenAI field, and litellm is normally run with
+    # drop_params=True, so it is stripped from the request body before it
+    # leaves. extra_body is forwarded verbatim, so a gateway logging
+    # server-side can still see which trace to join.
+    extra_body = dict(kwargs.get("extra_body") or {})
+    forwarded = dict(extra_body.get("metadata") or {})
+    for key in _PROXY_TRACE_KEYS:
+        if key in metadata:
+            forwarded.setdefault(key, metadata[key])
+    if forwarded:
+        extra_body["metadata"] = forwarded
+        kwargs["extra_body"] = extra_body
+
     return kwargs
 
 

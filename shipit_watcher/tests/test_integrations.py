@@ -618,3 +618,45 @@ class TestCostExtraction:
 
         kwargs = {"standard_logging_object": {"response_cost": 0.0009}}
         assert _cost_from(kwargs, types.SimpleNamespace()) == 0.0009
+
+
+class TestProxyTraceForwarding:
+    """A gateway that logs to Langfuse server-side cannot be silenced by a
+    client — but it can be told which trace to join."""
+
+    def test_proxy_keys_go_in_extra_body(self):
+        """`metadata` is not an OpenAI field and litellm is normally run with
+        drop_params=True, so it never reaches the proxy. extra_body is
+        forwarded verbatim."""
+        from shipit_watcher.instrumentation.litellm import _stamp
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="d" * 32, session_id="s1", user_id="user@example.com"):
+            kwargs = _stamp({"model": "gpt-4o"})
+
+        forwarded = kwargs["extra_body"]["metadata"]
+        assert forwarded["existing_trace_id"] == "d" * 32
+        assert forwarded["session_id"] == "s1"
+        assert forwarded["trace_user_id"] == "user@example.com"
+
+    def test_caller_extra_body_is_preserved(self):
+        from shipit_watcher.instrumentation.litellm import _stamp
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="e" * 32):
+            kwargs = _stamp({"extra_body": {"custom": 1}})
+        assert kwargs["extra_body"]["custom"] == 1
+        assert "existing_trace_id" in kwargs["extra_body"]["metadata"]
+
+    def test_caller_choice_wins(self):
+        from shipit_watcher.instrumentation.litellm import _stamp
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="f" * 32):
+            kwargs = _stamp({"metadata": {"existing_trace_id": "chosen"}})
+        assert kwargs["extra_body"]["metadata"]["existing_trace_id"] == "chosen"
+
+    def test_nothing_forwarded_outside_a_trace(self):
+        from shipit_watcher.instrumentation.litellm import _stamp
+
+        assert "extra_body" not in _stamp({"model": "gpt-4o"})
