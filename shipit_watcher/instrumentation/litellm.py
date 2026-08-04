@@ -79,10 +79,45 @@ def _cost_from(kwargs: Dict[str, Any], response: Any) -> float:
                 return float(candidate)
             except (TypeError, ValueError):
                 continue
+    return _computed_cost(kwargs, response)
+
+
+def _computed_cost(kwargs: Dict[str, Any], response: Any) -> float:
+    """Price the call ourselves when nobody reported a figure.
+
+    Streaming calls through a gateway routinely arrive with every cost field
+    at zero — the response is reassembled from chunks and the proxy's own
+    number never makes it back. Reporting $0 then is worse than reporting
+    nothing: it makes an expensive model look free in the ledger.
+    """
     try:
         import litellm
+    except Exception:
+        return 0.0
 
-        return float(litellm.completion_cost(completion_response=response) or 0.0)
+    # The routing prefix has to go first. Pricing knows `gemini-2.5-flash`;
+    # `openai/gemini-2.5-flash` is an instruction to litellm about *how* to
+    # reach it and matches no pricing entry.
+    model = str(kwargs.get("model", "") or "").split("/")[-1]
+
+    # Only price a model the table actually knows. Both litellm helpers fall
+    # back to a generic rate for anything unrecognised, which would quietly
+    # invent a cost for a private deployment — worse than reporting none,
+    # because an invented number looks authoritative.
+    if not model or model not in (getattr(litellm, "model_cost", None) or {}):
+        return 0.0
+
+    prompt_tokens, completion_tokens = _usage_from(response)
+    if not (prompt_tokens or completion_tokens):
+        return 0.0
+
+    try:
+        prompt_cost, completion_cost = litellm.cost_per_token(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        return float(prompt_cost + completion_cost)
     except Exception:
         return 0.0
 

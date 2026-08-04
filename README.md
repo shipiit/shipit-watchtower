@@ -12,7 +12,7 @@ Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 [![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
 [![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 288 tests
+`Python 3.11+` · zero required dependencies · framework-agnostic · 290 tests
 
 ```bash
 pip install shipit-watcher
@@ -48,6 +48,7 @@ why it chose what it chose.
 - [Design rules](#design-rules)
 - [Testing](#testing)
 - [Integration guide](#integration-guide)
+- [Going to production](#going-to-production)
 
 ---
 
@@ -680,7 +681,7 @@ Everything below has a working default. Nothing else is required to start.
 | Variable | Default | Meaning |
 |---|---|---|
 | `WATCHER_LANGFUSE_TRANSPORT` | `sdk` | `otlp` for the [agent graph](#agent-graphs) |
-| `WATCHER_DATASET` | – | default dataset for [`capture()`](#datasets-and-experiments) |
+| `WATCHER_DATASET` | – | default dataset, or prefix for [`agent_dataset_name()`](#datasets-and-experiments) |
 | `WATCHER_SERVICE` | `unknown-service` | tags every trace |
 | `WATCHER_ENV` | `development` | environment |
 | `WATCHER_ENABLED` | `true` | master switch |
@@ -809,6 +810,135 @@ Honest status, so nobody discovers a gap in production.
 | PII masking before persistence | ✅ |
 | LLM-as-a-judge scoring | ✅ |
 | Langfuse datasets / experiment runs | ✅ |
+
+---
+
+## Going to production
+
+Four things to set up, in order. Each is idempotent — safe to run on every
+deploy.
+
+### 1. Environment
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-…
+LANGFUSE_SECRET_KEY=sk-lf-…
+LANGFUSE_HOST=https://langfuse.your-company.com   # not optional when self-hosting
+
+WATCHER_ENV=production
+WATCHER_LANGFUSE_TRANSPORT=otlp     # agent graphs; needs a Langfuse v3 server
+WATCHER_PERSIST_DB=true             # the local ledger
+WATCHER_DATASET=myapp-eval          # prefix for per-agent capture datasets
+WATCHER_GOVERNANCE=audit            # warn / enforce once prompts are registered
+```
+
+`LANGFUSE_HOST` defaults to Langfuse Cloud. Leaving it unset on a self-hosted
+setup sends your traces to `cloud.langfuse.com`, where the keys do not work
+and nothing appears — a silent failure, so check it first.
+
+### 2. Configure once, at startup
+
+Not per request, and not per entry point. Observability that depends on
+which code path you came through is worse than none:
+
+```python
+# Django: AppConfig.ready()   ·   FastAPI: a startup hook   ·   scripts: main()
+import shipit_watcher as wt
+
+wt.configure(
+    service_name="myapp",
+    environment=os.getenv("WATCHER_ENV", "production"),
+    langfuse_transport=os.getenv("WATCHER_LANGFUSE_TRANSPORT", "otlp"),
+    persist_to_database=True,
+    dataset=os.getenv("WATCHER_DATASET", ""),
+)
+wt.instrument_litellm()
+```
+
+`instrument_litellm()` belongs at startup too, not beside the first LLM call —
+a background worker that reaches LiteLLM directly would otherwise run
+uninstrumented and its calls would go unrecorded.
+
+### 3. Migrate the ledger
+
+The local ledger is a table in *your* database, so it needs a migration like
+any other model. On Django, the models live in your app; run your normal
+`migrate`. Verify it landed:
+
+```python
+from myapp.models import LLMCallRecord
+LLMCallRecord.objects.count()
+```
+
+Nothing else has to happen for cost and prompt-compliance reporting — every
+generation writes a row from then on.
+
+### 4. Seed the prompt registry
+
+Publish what each agent runs *today*, so nothing changes behaviourally and the
+text becomes editable without a deploy:
+
+```python
+for agent in agents:
+    key = wt.agent_prompt_name(agent)            # "agent:inbox-manager"
+    current = wt.get_prompt(key, fallback=agent.system_prompt)
+    if not current.registered:
+        wt.create_prompt(key, agent.system_prompt, labels=["production"],
+                         config={"model": agent.model, "temperature": agent.temperature})
+```
+
+Two rules worth keeping when you wrap this in a command:
+
+- **Skip an agent that already matches.** Otherwise a scheduled run fills the
+  registry with identical versions.
+- **Never overwrite a prompt that has diverged.** If the registry text differs
+  from the database, somebody edited it in Langfuse — publishing over it from
+  code discards their work silently. Report it and require an explicit
+  `--force`.
+
+### 5. Let the datasets fill themselves
+
+Capture at the moment something goes wrong, rather than hunting for it later:
+
+```python
+if user_disliked_the_answer:
+    wt.add_item(
+        wt.agent_dataset_name(agent),          # "myapp-eval-inbox-manager"
+        input=question,
+        expected_output=None,                  # for a human to fill in
+        metadata={"reason": "user_disliked", "feedback": feedback},
+        source_trace_id=message.trace_id,
+        item_id=f"msg-{message.id}",           # idempotent: no duplicates
+    )
+```
+
+One dataset per agent — a bad answer from the scheduler tells you nothing
+about the inbox manager, and a shared dataset makes every run an average of
+unrelated cases.
+
+### Verify the whole thing
+
+```python
+c = wt.get_config()
+assert c.has_langfuse_credentials          # keys reached the process
+assert c.langfuse_transport == "otlp"      # graphs will render
+assert c.persist_to_database               # ledger is on
+from shipit_watcher.instrumentation.litellm import is_instrumented
+assert is_instrumented()                   # LLM calls will be recorded
+
+import litellm
+assert litellm.success_callback == []      # nothing double-logs
+```
+
+The last one matters more than it looks. If another package has installed
+Langfuse's OpenAI drop-in (`from langfuse.openai import openai`), it patches
+the SDK **globally** and every call is traced a second time. Disable it after
+import:
+
+```python
+from langfuse.openai import openai
+openai.langfuse_enabled = False
+```
 
 ---
 

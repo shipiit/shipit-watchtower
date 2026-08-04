@@ -235,3 +235,40 @@ class TestDefaultDataset:
         with wt.bind(trace_id="t" * 32):
             assert ds.capture(input="q") is None
         assert client.created_items == []
+
+
+class TestAgentDatasetName:
+    """One dataset per agent: a failing case for one agent tells you nothing
+    about another, and a shared dataset makes every run an average of
+    unrelated cases."""
+
+    def test_slug_from_the_agent(self):
+        class A:
+            name = "Inbox Manager"
+        assert ds.agent_dataset_name(A(), prefix="myapp-eval-") == "myapp-eval-inbox-manager"
+
+    def test_missing_separator_is_added(self):
+        """Forgetting the trailing dash is the obvious mistake; silently
+        producing `myapp-evalinbox-manager` helps nobody."""
+        assert ds.agent_dataset_name("Inbox Manager", prefix="myapp-eval") == \
+            "myapp-eval-inbox-manager"
+
+    def test_existing_separator_is_respected(self):
+        for prefix in ("p-", "p_", "p/", "p:", "p."):
+            assert ds.agent_dataset_name("Ops", prefix=prefix) == f"{prefix}ops"
+
+    def test_prefix_defaults_to_config(self):
+        wt.configure(service_name="test", dataset="cfg-eval-",
+                     langfuse_public_key="pk", langfuse_secret_key="sk")
+        assert ds.agent_dataset_name("Ops") == "cfg-eval-ops"
+
+    def test_no_prefix_is_just_the_slug(self):
+        wt.configure(service_name="test", dataset="",
+                     langfuse_public_key="pk", langfuse_secret_key="sk")
+        assert ds.agent_dataset_name("Ops") == "ops"
+
+    def test_display_name_and_slug_agree(self):
+        class A:
+            slug = "inbox-manager"
+        assert ds.agent_dataset_name(A(), prefix="e-") == \
+            ds.agent_dataset_name("Inbox Manager", prefix="e-")

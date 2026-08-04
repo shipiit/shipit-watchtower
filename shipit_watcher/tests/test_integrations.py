@@ -122,8 +122,14 @@ class TestLangfuseSink:
         return LangfuseSink(client=client), client
 
     def test_unavailable_without_client(self):
+        import shipit_watcher as wt
         from shipit_watcher.sinks.langfuse_sink import LangfuseSink
 
+        # Stated explicitly rather than inherited from the environment: a
+        # test that only passes on a machine without credentials is a test
+        # that fails on the one machine where it matters.
+        wt.configure(service_name="test", langfuse_public_key="",
+                     langfuse_secret_key="")
         sink = LangfuseSink(client=None)
         # Nothing should raise even though there is no backend.
         sink.start_trace("t", "n", TraceContext(trace_id="t"))
@@ -411,10 +417,15 @@ class TestLiteLLMInstrumentation:
         )
         assert _usage_from(response) == (5, 6)
 
-    def test_cost_falls_back_to_completion_cost(self, fake_litellm):
+    def test_no_price_is_invented_for_an_unpriced_model(self, fake_litellm):
+        """litellm's cost helpers fall back to a generic rate for a model they
+        do not recognise. Trusting that would quietly put a fabricated number
+        on a private deployment — worse than reporting none, because an
+        invented figure looks authoritative."""
         from shipit_watcher.instrumentation.litellm import _cost_from
 
-        assert _cost_from({}, types.SimpleNamespace()) == 0.005
+        assert _cost_from({"model": "some-private-deployment"},
+                          types.SimpleNamespace()) == 0.0
 
 
 class TestAmbientPrompt:
@@ -660,3 +671,62 @@ class TestProxyTraceForwarding:
         from shipit_watcher.instrumentation.litellm import _stamp
 
         assert "extra_body" not in _stamp({"model": "gpt-4o"})
+
+
+class TestComputedCost:
+    """Streaming calls through a gateway routinely report every cost field as
+    zero. Reporting $0 then makes an expensive model look free.
+
+    These use the real litellm pricing table on purpose — the bug being
+    guarded against is precisely that its helpers price models they do not
+    know, which a stub cannot reproduce.
+    """
+
+    pytest.importorskip("litellm")
+
+    def test_cost_is_computed_from_tokens_when_unreported(self):
+        import types
+
+        from shipit_watcher.instrumentation.litellm import _cost_from
+
+        response = types.SimpleNamespace(
+            usage={"prompt_tokens": 1000, "completion_tokens": 500},
+            _hidden_params={},
+        )
+        cost = _cost_from({"model": "gpt-4o-mini"}, response)
+        assert cost > 0
+
+    def test_routing_prefix_is_stripped(self):
+        """`openai/gemini-2.5-flash` is a routing instruction; the pricing
+        table only knows the bare model name."""
+        import types
+
+        from shipit_watcher.instrumentation.litellm import _cost_from
+
+        response = types.SimpleNamespace(
+            usage={"prompt_tokens": 1000, "completion_tokens": 500},
+            _hidden_params={},
+        )
+        prefixed = _cost_from({"model": "openai/gpt-4o-mini"}, response)
+        bare = _cost_from({"model": "gpt-4o-mini"}, response)
+        assert prefixed == bare > 0
+
+    def test_reported_cost_still_wins(self):
+        import types
+
+        from shipit_watcher.instrumentation.litellm import _cost_from
+
+        response = types.SimpleNamespace(
+            usage={"prompt_tokens": 1000, "completion_tokens": 500},
+            _hidden_params={"response_cost": 0.42},
+        )
+        assert _cost_from({"model": "gpt-4o-mini"}, response) == 0.42
+
+    def test_unknown_model_is_zero_not_a_crash(self):
+        import types
+
+        from shipit_watcher.instrumentation.litellm import _cost_from
+
+        response = types.SimpleNamespace(
+            usage={"prompt_tokens": 10, "completion_tokens": 5}, _hidden_params={})
+        assert _cost_from({"model": "some-private-deployment"}, response) == 0.0

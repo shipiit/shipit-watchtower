@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DatasetItem",
+    "agent_dataset_name",
     "ExperimentResult",
     "capture",
     "create_dataset",
@@ -76,6 +77,29 @@ class ExperimentResult:
     @property
     def ok(self) -> bool:
         return not self.error
+
+
+def agent_dataset_name(agent: Any, prefix: str = "") -> str:
+    """The dataset key for one agent: ``<prefix><slug>``.
+
+    One dataset per agent, for the same reason prompts are namespaced per
+    agent: a failing case for the billing assistant tells you nothing about
+    the scheduler, and a single shared dataset makes every run a mix of
+    unrelated cases whose average means nothing.
+
+    ``prefix`` comes from ``WATCHER_DATASET`` — set it to ``myapp-eval-`` and
+    an agent named "Inbox Manager" resolves to ``myapp-eval-inbox-manager``.
+    A prefix with no trailing separator gets one, because forgetting it is
+    the obvious mistake and silently producing ``myapp-evalinbox-manager``
+    helps nobody.
+    """
+    from .prompts import agent_prompt_name
+
+    slug = agent_prompt_name(agent).split(":", 1)[-1]
+    prefix = prefix or get_config().dataset
+    if prefix and not prefix.endswith(("-", "_", "/", ":", ".")):
+        prefix += "-"
+    return f"{prefix}{slug}" if prefix else slug
 
 
 def _flush_traces(settle_seconds: float = 2.0) -> None:
