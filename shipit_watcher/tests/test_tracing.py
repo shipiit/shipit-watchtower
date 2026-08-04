@@ -452,3 +452,34 @@ class TestEvents:
 
     def test_chunk_serialises(self):
         assert RetrievedChunk(source="s").to_dict()["source"] == "s"
+
+
+class TestResultIsolation:
+    """Each trace owns its own result.
+
+    `bind` builds the new context with dataclasses.replace, which copies the
+    *reference* to the parent's result dict. Without an explicit reset every
+    trace shares one dict, and a new trace reports the previous trace's output
+    as its own — a confident wrong answer rather than a missing one.
+    """
+
+    def test_a_new_trace_starts_with_no_output(self, installed_tracer):
+        with installed_tracer.trace("first") as a:
+            a.set_output({"answer": "one"})
+        with installed_tracer.trace("second") as b:
+            assert b.result == {}, "a fresh trace inherited the previous output"
+            b.set_output({"answer": "two"})
+
+    def test_outputs_do_not_bleed_between_traces(self, installed_tracer):
+        seen = []
+        for n in ("one", "two", "three"):
+            with installed_tracer.trace(f"turn.{n}") as ctx:
+                seen.append(dict(ctx.result))
+                ctx.set_output({"answer": n})
+        assert seen == [{}, {}, {}]
+
+    def test_result_dicts_are_distinct_objects(self, installed_tracer):
+        with installed_tracer.trace("a") as a:
+            first = a.result
+        with installed_tracer.trace("b") as b:
+            assert b.result is not first

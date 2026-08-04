@@ -163,7 +163,15 @@ class Tracer:
         # throw()" — masking the user's real error with a confusing one. Sink
         # calls are guarded individually instead; the body's exception is
         # recorded and re-raised untouched.
-        with bind(trace_id=trace_id, parent_id=None, **context_fields) as context:
+        # `result={}` is not redundant. `bind` builds the new context with
+        # dataclasses.replace, which copies the *reference* to the parent's
+        # result dict — so without this every trace shares one dict and a new
+        # trace reports the previous trace's output as its own. In production
+        # that showed up as background traces all carrying the last chat
+        # answer, which is worse than a missing output: it is a confident
+        # wrong one.
+        with bind(trace_id=trace_id, parent_id=None, result={},
+                  **context_fields) as context:
             try:
                 self.sink.start_trace(trace_id, name, context, self._prepare(input))
             except Exception:
