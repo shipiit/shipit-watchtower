@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-watchtower"
+version = "1.0.0"
+description = "Observability for LLM applications — tracing, prompt governance, cost allocation and PII masking."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Rahul Raj" }]
+keywords = ["llm", "observability", "langfuse", "litellm", "tracing", "governance"]
+
+classifiers = [
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+
+# The core is dependency-free on purpose: it must be importable in any app,
+# including ones that ship neither Langfuse nor LiteLLM. Backends are extras,
+# and every integration degrades to a no-op when its library is absent.
+dependencies = []
+
+[project.optional-dependencies]
+langfuse = ["langfuse>=2.0"]
+litellm = ["litellm>=1.40"]
+django = ["django>=4.2"]
+all = ["langfuse>=2.0", "litellm>=1.40", "django>=4.2"]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "mypy>=1.10",
+  "ruff>=0.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ai_watchtower"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["ai_watchtower"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "\\.\\.\\.",
+]
+
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
