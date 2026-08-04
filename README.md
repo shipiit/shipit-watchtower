@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/shipiit/ai-watchtower/main/hero.png" alt="shipit-watcher — observability for LLM applications: tracing, agent graphs, prompt governance, cost allocation, PII masking" width="100%">
+<img src="https://raw.githubusercontent.com/shipiit/shipit-watchtower/main/hero.png" alt="shipit-watcher — observability for LLM applications: tracing, agent graphs, prompt governance, cost allocation, PII masking" width="100%">
 
 **Observability for LLM applications.**
 

@@ -31,11 +31,11 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/shipiit/ai-watchtower"
-Documentation = "https://github.com/shipiit/ai-watchtower#readme"
-Source = "https://github.com/shipiit/ai-watchtower"
-Issues = "https://github.com/shipiit/ai-watchtower/issues"
-Changelog = "https://github.com/shipiit/ai-watchtower/releases"
+Homepage = "https://github.com/shipiit/shipit-watchtower"
+Documentation = "https://github.com/shipiit/shipit-watchtower#readme"
+Source = "https://github.com/shipiit/shipit-watchtower"
+Issues = "https://github.com/shipiit/shipit-watchtower/issues"
+Changelog = "https://github.com/shipiit/shipit-watchtower/releases"
 
 [project.optional-dependencies]
 langfuse = ["langfuse>=2.0"]

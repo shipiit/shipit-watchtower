@@ -25,8 +25,8 @@ infrastructure.
 ## Getting set up
 
 ```bash
-git clone https://github.com/shipiit/ai-watchtower
-cd ai-watchtower
+git clone https://github.com/shipiit/shipit-watchtower
+cd shipit-watchtower
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]"
 pytest
@@ -65,5 +65,5 @@ No AI or tooling attribution in commit messages.
 ## Reporting a security problem
 
 Do not open a public issue. Use
-[a private advisory](https://github.com/shipiit/ai-watchtower/security/advisories/new).
+[a private advisory](https://github.com/shipiit/shipit-watchtower/security/advisories/new).
 This library handles API keys and PII-masked payloads.
