@@ -1,7 +1,7 @@
 """
 The event model — a typed vocabulary for what an AI system did.
 
-The RFP's Moduł G asks for a decision path ("planning → execution → validation
+The RFP's the requirements asks for a decision path ("planning → execution → validation
 → answer") and for "why this answer, why not another". Neither is derivable
 from free-form spans: if every step is just ``span(name="something")`` then the
 shape of a decision is lost the moment it is written.

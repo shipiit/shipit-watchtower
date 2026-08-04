@@ -141,7 +141,7 @@ class TestLangfuseSink:
         assert kwargs["user_id"] == "u1"
         assert kwargs["metadata"]["cost_center"] == "ops"
         assert "company:acme" in kwargs["tags"]
-        assert "mpk:ops" in kwargs["tags"]
+        assert "cost_center:ops" in kwargs["tags"]
 
     def test_generation_uses_generation_api(self):
         sink, client = self._sink()
@@ -368,8 +368,8 @@ class TestLiteLLMInstrumentation:
 
         assert _call_name({
             "call_type": "aembedding",
-            "metadata": {"generation_name": "rag.tickets"},
-        }) == "rag.tickets"
+            "metadata": {"generation_name": "rag.documents"},
+        }) == "rag.documents"
 
     def test_handler_records_failures(self, fake_litellm):
         from shipit_watcher.instrumentation import litellm as inst
@@ -435,8 +435,8 @@ class TestAmbientPrompt:
         sink = Collector()
         previous, tmod._tracer = tmod._tracer, Tracer(sinks=[sink])
         try:
-            identity = wt.identify_prompt("You are a fleet assistant.",
-                                          name="fleet-assistant", version="2",
+            identity = wt.identify_prompt("You are a support assistant.",
+                                          name="support-assistant", version="2",
                                           registered=True)
             with tmod._tracer.trace("turn"):
                 with wt.use_prompt(identity):
@@ -445,7 +445,7 @@ class TestAmbientPrompt:
         finally:
             tmod._tracer = previous
 
-        assert sink.events[0].prompt["prompt_name"] == "fleet-assistant"
+        assert sink.events[0].prompt["prompt_name"] == "support-assistant"
         assert sink.events[0].prompt["prompt_version"] == "2"
 
     def test_explicit_prompt_wins_over_ambient(self):
@@ -487,6 +487,6 @@ class TestAmbientPrompt:
         from shipit_watcher.context import current_context
         from shipit_watcher.prompts import ManagedPrompt
 
-        managed = ManagedPrompt(name="fleet-assistant", template="hi", version="3")
+        managed = ManagedPrompt(name="support-assistant", template="hi", version="3")
         with wt.use_prompt(managed):
-            assert current_context().prompt["prompt_name"] == "fleet-assistant"
+            assert current_context().prompt["prompt_name"] == "support-assistant"

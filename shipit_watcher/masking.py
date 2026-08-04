@@ -2,7 +2,7 @@
 PII masking applied *before* data is persisted to an observability backend.
 
 Traces carry email bodies, driver names, recipient addresses and company tax
-IDs (pentest finding FF-40). Those leave FleetFlow's boundary the moment they
+IDs (a security review). Those leave the host application's boundary the moment they
 are shipped to Langfuse, so masking at display time is too late — by then the
 raw value is already stored on someone else's infrastructure.
 

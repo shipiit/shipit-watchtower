@@ -5,7 +5,7 @@ The alternative to this module is threading ``trace_id`` and
 ``parent_observation_id`` through every function that might emit an event —
 which is how instrumentation ends up half-applied: the moment one call site
 forgets, its spans detach and reappear as orphan top-level traces. That is
-precisely the failure visible in FleetFlow today, where LiteLLM generations
+precisely the failure visible in the host application today, where LiteLLM generations
 show up flat, unparented, with empty metadata.
 
 ``contextvars`` fixes it properly: the context follows the logical flow of
@@ -44,7 +44,7 @@ class TraceContext:
     user_id: Optional[str] = None
     company_id: Optional[str] = None
     session_id: Optional[str] = None
-    #: MPK / cost centre. The RFP requires allocation at gateway level, which
+    #: cost centre. The RFP requires allocation at gateway level, which
     #: means it has to be in scope wherever a call is made — not looked up
     #: afterwards from something that may since have changed.
     cost_center: Optional[str] = None
@@ -110,7 +110,7 @@ def get_parent_id() -> Optional[str]:
 def bind(**fields: Any) -> Iterator[TraceContext]:
     """Bind values onto the ambient context for the duration of the block.
 
-        with bind(company_id=str(company.id), cost_center="fleet-ops"):
+        with bind(company_id=str(company.id), cost_center="support-ops"):
             ...                       # every event here carries both
 
     ``tags`` and ``metadata`` merge with what is already bound; everything else
@@ -145,7 +145,7 @@ def use_prompt(prompt: Any) -> Iterator[None]:
     *or* straight through ``litellm`` with ``instrument_litellm()`` active —
     records this prompt's name, version and fingerprint::
 
-        prompt = wt.get_prompt("fleet-assistant")
+        prompt = wt.get_prompt("support-assistant")
         with wt.use_prompt(prompt):
             litellm.completion(model=..., messages=...)   # attributed
 

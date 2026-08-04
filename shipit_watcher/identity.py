@@ -1,13 +1,13 @@
 """
 Prompt identity — the precondition for prompt governance.
 
-The Shipit Watcher requirements put this first: *"Prompt identity carried in
+The the requirements put this first: *"Prompt identity carried in
 every call — precondition for enforce, nothing else works without it."* Without
 it a trace can say which model ran and what it cost, but not **which prompt
 version produced this answer** — so prompt governance, regression comparison
 and "why this answer" all have nothing to hang off.
 
-FleetFlow's prompts live in the database (``Agent.system_prompt``,
+the host application's prompts live in the database (``Agent.system_prompt``,
 ``DocumentType.extraction_prompt``) and in code, not in a registry. Rather than
 block on migrating everything into Langfuse Prompt Management, this module
 gives every prompt a stable identity *now*:

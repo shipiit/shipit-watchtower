@@ -12,18 +12,18 @@ Quick start
 
     import shipit_watcher as wt
 
-    wt.configure(service_name="fleetflow", environment="production")
+    wt.configure(service_name="my-app", environment="production")
     wt.instrument_litellm()          # one trace per call, not three
 
     with wt.trace("chat.request", company_id=str(company.id),
-                  cost_center="fleet-ops", user_id=str(user.id)):
-        with wt.get_tracer().tool("search_fleet") as tool:
+                  cost_center="support-ops", user_id=str(user.id)):
+        with wt.get_tracer().tool("search_docs") as tool:
             tool.output = search(query)
 
         wt.get_tracer().decision(
-            "route", chosen="fuel-expert",
-            options=["fuel-expert", "driver-expert"],
-            rationale="query mentions consumption",
+            "route", chosen="billing-expert",
+            options=["billing-expert", "support-expert"],
+            rationale="query mentions billing",
         )
 
 Design rules

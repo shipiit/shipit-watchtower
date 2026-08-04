@@ -6,7 +6,7 @@ call, so it cannot be forgotten: every completion made through :class:`LLMClient
 is traced, costed, attributed to a tenant and a cost centre, tied to a prompt
 version, and PII-masked, because there is no way to make one that is not.
 
-That matters more than it sounds. FleetFlow's agent loop and the SDK both
+That matters more than it sounds. the host application's agent loop and the SDK both
 opened traces for the same turn, producing two records of one event — the exact
 duplication this package exists to remove. A single gateway settles it: the
 application asks for a completion and observability is a property of the
@@ -153,7 +153,7 @@ class LLMClient:
 
         client = wt.LLMClient(model="gemini-2.5-pro")
         answer = client.complete(
-            messages=[{"role": "user", "content": "How many cars?"}],
+            messages=[{"role": "user", "content": "How many items?"}],
             prompt=prompt_identity,
         )
 
@@ -424,9 +424,9 @@ def run_prompt(
     The whole loop an agent turn actually needs, in one call::
 
         answer = wt.run_prompt(
-            "fleet-assistant",
-            variables={"company": "VivaDrive", "vehicles": 142},
-            user_message="How many cars do we have?",
+            "support-assistant",
+            variables={"company": "Acme", "vehicles": 142},
+            user_message="How many items do we have?",
         )
 
     What it does that a hand-written version usually forgets:

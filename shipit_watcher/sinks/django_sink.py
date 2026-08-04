@@ -4,7 +4,7 @@ Django sink — the local ledger.
 Writes generations to ``agent.LLMCallRecord`` so the audit trail lives inside
 the application's own database. Langfuse is where you *look* at traces; this is
 where they are *kept*: retention outlives any hosted plan, the data never
-leaves FleetFlow's boundary, and MPK reporting is SQL rather than an export
+leaves the host application's boundary, and cost-centre reporting is SQL rather than an export
 from someone else's UI.
 
 Only generations are persisted. Spans, decisions and retrievals are high-volume

@@ -272,16 +272,16 @@ class TestCreate:
 class TestAgentPrompts:
     def test_name_from_slug(self):
         class A:
-            slug = "fuel-expert"
-        assert agent_prompt_name(A()) == "agent/fuel-expert"
+            slug = "billing-expert"
+        assert agent_prompt_name(A()) == "agent/billing-expert"
 
     def test_display_name_is_slugified(self):
-        """`"FleetFlow Assistant"` and `"fleetflow-assistant"` must not become
+        """`"Support Assistant"` and `"support-assistant"` must not become
         two prompts, or half the fleet silently runs an older version."""
         class A:
-            name = "FleetFlow Assistant"
-        assert agent_prompt_name(A()) == "agent/fleetflow-assistant"
-        assert agent_prompt_name("fleetflow-assistant") == "agent/fleetflow-assistant"
+            name = "Support Assistant"
+        assert agent_prompt_name(A()) == "agent/support-assistant"
+        assert agent_prompt_name("support-assistant") == "agent/support-assistant"
 
     def test_slug_wins_over_display_name(self):
         class A:
@@ -290,18 +290,18 @@ class TestAgentPrompts:
         assert agent_prompt_name(A()) == "agent/canonical"
 
     def test_punctuation_collapses(self):
-        assert agent_prompt_name("Fleet  //  Ops!!") == "agent/fleet-ops"
+        assert agent_prompt_name("Support  //  Ops!!") == "agent/support-ops"
 
     def test_empty_agent_degrades_to_the_prefix(self):
         assert agent_prompt_name("") == "agent"
 
     def test_resolves_per_agent(self):
-        client = FakeClient({"agent/fuel-expert": FakePrompt("Fuel {{q}}", version="4")})
+        client = FakeClient({"agent/billing-expert": FakePrompt("Fuel {{q}}", version="4")})
         import shipit_watcher.prompts as pmod
 
         previous, pmod._registry = pmod._registry, PromptRegistry(client=client)
         try:
-            p = pmod.get_agent_prompt("Fuel Expert")
+            p = pmod.get_agent_prompt("Billing Expert")
             assert p.version == "4" and p.registered is True
         finally:
             pmod._registry = previous

@@ -80,7 +80,7 @@ class TestIdentifiers:
         """An id from outside watcher — an email, a slug — must still
         produce a valid identifier: OTLP rejects malformed ones, and dropping
         the span would lose the observation entirely."""
-        value = _hex_id("rahul@vivadrive.io", 16)
+        value = _hex_id("user@example.com", 16)
         assert len(value) == 16
         assert all(c in "0123456789abcdef" for c in value)
 
@@ -102,15 +102,15 @@ class TestObservationTypes:
     def test_tool_becomes_a_tool_node(self, sink):
         tracer = Tracer(sinks=[sink])
         with tracer.trace("turn"):
-            with tracer.tool("df_list_cars"):
+            with tracer.tool("list_orders"):
                 pass
         _, spans = sink.sent[0]
-        tool = next(s for s in spans if "df_list_cars" in s["name"])
+        tool = next(s for s in spans if "list_orders" in s["name"])
         assert attrs(tool)["langfuse.observation.type"] == "tool"
 
     def test_root_is_an_agent_node(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("fleetflow.agent.turn"):
+        with tracer.trace("app.agent.turn"):
             pass
         _, spans = sink.sent[0]
         assert attrs(spans[0])["langfuse.observation.type"] == "agent"
@@ -139,7 +139,7 @@ class TestParenting:
         lookup, nothing in between to explain it."""
         tracer = Tracer(sinks=[sink])
         with tracer.trace("turn"):
-            with tracer.tool("df_list_cars"):
+            with tracer.tool("list_orders"):
                 pass
         _, spans = sink.sent[0]
         root, child = spans[0], spans[1]
@@ -184,7 +184,7 @@ class TestMetadataEncoding:
 
     def test_trace_metadata_is_a_single_attribute(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn", cost_center="fleet-ops", company_id="c1"):
+        with tracer.trace("turn", cost_center="support-ops", company_id="c1"):
             pass
         _, spans = sink.sent[0]
         keys = attrs(spans[0])
@@ -193,16 +193,16 @@ class TestMetadataEncoding:
 
     def test_trace_metadata_is_valid_json(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn", cost_center="fleet-ops"):
+        with tracer.trace("turn", cost_center="support-ops"):
             pass
         _, spans = sink.sent[0]
         parsed = json.loads(attrs(spans[0])["langfuse.trace.metadata"])
-        assert parsed["cost_center"] == "fleet-ops"
+        assert parsed["cost_center"] == "support-ops"
 
     def test_observation_metadata_is_a_single_attribute(self, sink):
         tracer = Tracer(sinks=[sink])
         with tracer.trace("turn"):
-            with tracer.tool("df_list_cars"):
+            with tracer.tool("list_orders"):
                 pass
         _, spans = sink.sent[0]
         keys = attrs(spans[1])
@@ -216,12 +216,12 @@ class TestMetadataEncoding:
         tracer = Tracer(sinks=[sink])
         with tracer.trace("turn"):
             with tracer.generation("llm.x", model="m") as g:
-                g.prompt = {"prompt_name": "fleet-assistant", "prompt_version": "2"}
+                g.prompt = {"prompt_name": "support-assistant", "prompt_version": "2"}
         _, spans = sink.sent[0]
         keys = attrs(spans[1])
         assert not any(k.startswith("langfuse.observation.prompt.") for k in keys)
         link = json.loads(keys["langfuse.observation.prompt"])
-        assert link == {"name": "fleet-assistant", "version": "2"}
+        assert link == {"name": "support-assistant", "version": "2"}
 
     def test_prompt_link_omitted_when_unknown(self, sink):
         tracer = Tracer(sinks=[sink])
@@ -235,14 +235,14 @@ class TestMetadataEncoding:
 class TestTraceAttributes:
     def test_user_session_and_tags_are_carried(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn", user_id="rahul@vivadrive.io",
-                          session_id="s1", tags=["fleetflow"]):
+        with tracer.trace("turn", user_id="user@example.com",
+                          session_id="s1", tags=["my-app"]):
             pass
         _, spans = sink.sent[0]
         a = attrs(spans[0])
-        assert a["langfuse.user.id"] == "rahul@vivadrive.io"
+        assert a["langfuse.user.id"] == "user@example.com"
         assert a["langfuse.session.id"] == "s1"
-        assert "fleetflow" in a["langfuse.trace.tags"]
+        assert "my-app" in a["langfuse.trace.tags"]
 
     def test_user_id_may_be_any_string(self, sink):
         """Not every system keys users by UUID."""
@@ -255,9 +255,9 @@ class TestTraceAttributes:
     def test_output_reaches_the_root(self, sink):
         tracer = Tracer(sinks=[sink])
         with tracer.trace("turn") as ctx:
-            ctx.set_output({"answer": "142 cars"})
+            ctx.set_output({"answer": "142 items"})
         _, spans = sink.sent[0]
-        assert "142 cars" in attrs(spans[0])["langfuse.trace.output"]
+        assert "142 items" in attrs(spans[0])["langfuse.trace.output"]
 
     def test_root_encloses_its_children_in_time(self, sink):
         """A root that ends before its children collapses the timeline."""

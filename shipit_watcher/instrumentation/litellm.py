@@ -1,7 +1,7 @@
 """
 LiteLLM instrumentation.
 
-Fixes the duplicate-trace problem directly. Today FleetFlow sets::
+Fixes the duplicate-trace problem directly. Today the host application sets::
 
     litellm.success_callback = ["langfuse"]
 

@@ -87,11 +87,11 @@ class LangfuseSink:
             f"service:{config.service_name}",
             f"env:{config.environment}",
             *( [f"company:{context.company_id}"] if context.company_id else [] ),
-            *( [f"mpk:{context.cost_center}"] if context.cost_center else [] ),
+            *( [f"cost_center:{context.cost_center}"] if context.cost_center else [] ),
         ])
 
         try:
-            # v2 style — the version FleetFlow pins today.
+            # v2 style — the version the host application pins today.
             trace = self._client.trace(
                 id=trace_id,
                 name=name,
