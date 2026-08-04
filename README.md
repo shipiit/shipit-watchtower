@@ -12,7 +12,7 @@ Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 [![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
 [![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 246 tests
+`Python 3.11+` · zero required dependencies · framework-agnostic · 261 tests
 
 ```bash
 pip install shipit-watcher
@@ -215,7 +215,7 @@ Everything below is that call taken apart, for when you need the pieces.
 ### One prompt per agent
 
 An application with several agents should not share one prompt namespace.
-Prompts are keyed `agent/<slug>`, and the slug is derived from the agent so
+Prompts are keyed `agent:<slug>`, and the slug is derived from the agent so
 `"Support Assistant"` and `"support-assistant"` can never resolve to two
 different prompts:
 
@@ -230,7 +230,7 @@ without one keep working exactly as before, and `prompt.registered` tells the
 compliance report which is which.
 
 ```python
-wt.agent_prompt_name("Billing Expert")       # → "agent/billing-expert"
+wt.agent_prompt_name("Billing Expert")       # → "agent:billing-expert"
 ```
 
 ### Attributing calls you cannot reach

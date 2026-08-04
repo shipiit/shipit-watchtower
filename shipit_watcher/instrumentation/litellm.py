@@ -24,11 +24,12 @@ duplicates return.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from typing import Any, Dict, Optional
 
-from ..context import current_context
+from ..context import TraceContext, current_context
 from ..events import GenerationEvent, Severity
 from ..tracer import get_tracer
 
@@ -54,8 +55,20 @@ def _usage_from(response: Any) -> tuple[int, int]:
 
 
 def _cost_from(kwargs: Dict[str, Any], response: Any) -> float:
-    """Best-effort cost. LiteLLM reports it in several places by version."""
+    """Best-effort cost. LiteLLM reports it in several places by version.
+
+    ``_hidden_params["response_cost"]`` is checked first and matters most:
+    behind a proxy the model is an alias the local pricing map has never heard
+    of, so ``completion_cost`` computes 0 and the proxy's own figure — which
+    lands here — is the only real number available.
+    """
+    hidden = getattr(response, "_hidden_params", None)
+    if not isinstance(hidden, dict):
+        hidden = (kwargs.get("litellm_params") or {}).get("_hidden_params") or {}
     for candidate in (
+        hidden.get("response_cost") if isinstance(hidden, dict) else None,
+        (kwargs.get("standard_logging_object") or {}).get("response_cost")
+        if isinstance(kwargs, dict) else None,
         (kwargs.get("response_cost") if isinstance(kwargs, dict) else None),
         (kwargs.get("litellm_params", {}) or {}).get("response_cost")
         if isinstance(kwargs, dict) else None,
@@ -96,11 +109,104 @@ def _call_name(kwargs: Dict[str, Any]) -> str:
     An explicit `metadata["generation_name"]` wins — a caller that named the
     operation knows more than we can infer.
     """
-    explicit = (kwargs.get("metadata") or {}).get("generation_name")
-    if explicit:
-        return str(explicit)
+    # LiteLLM relocates metadata into litellm_params on some paths, so both
+    # are checked — a name the caller chose should not depend on which one.
+    for holder in (kwargs.get("metadata"),
+                   (kwargs.get("litellm_params") or {}).get("metadata")):
+        if isinstance(holder, dict) and holder.get("generation_name"):
+            return str(holder["generation_name"])
     call_type = str(kwargs.get("call_type", "") or "completion")
     return _CALL_NAMES.get(call_type, f"llm.{call_type}")
+
+
+#: Key under which the calling thread's trace context travels with the request.
+#:
+#: LiteLLM runs the success handler for a *streaming* call on a plain
+#: ``threading.Thread``, and a plain thread does not inherit ``contextvars``.
+#: So by the time the handler asks "which trace am I in?", the answer is
+#: "none" — and the generation detaches from the turn that made it. That is
+#: how a fully wired agent trace ends up showing tool spans and no LLM call.
+#:
+#: The fix is to read the context in the caller's thread, where it is still
+#: correct, and send it along with the request. LiteLLM passes ``metadata``
+#: through to the callback untouched, so it is a reliable envelope.
+_CONTEXT_KEY = "_watcher_context"
+
+#: The litellm entry points wrapped to stamp the context.
+_WRAPPED_FUNCTIONS = ("completion", "acompletion", "embedding", "aembedding",
+                      "text_completion", "atext_completion")
+
+_originals: Dict[str, Any] = {}
+
+
+def _snapshot_context() -> Dict[str, Any]:
+    """The ambient context as a plain dict, safe to hand to another thread."""
+    context = current_context()
+    return {
+        "trace_id": context.trace_id,
+        "parent_id": context.parent_id,
+        "user_id": context.user_id,
+        "company_id": context.company_id,
+        "session_id": context.session_id,
+        "cost_center": context.cost_center,
+        "channel": context.channel,
+        "tags": list(context.tags),
+        "metadata": dict(context.metadata),
+        "prompt": dict(context.prompt),
+    }
+
+
+def _restore_context(payload: Any) -> Optional[TraceContext]:
+    if not isinstance(payload, dict) or not payload.get("trace_id"):
+        return None
+    fields = TraceContext.__dataclass_fields__
+    return TraceContext(**{k: v for k, v in payload.items() if k in fields})
+
+
+def _stamp(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the calling thread's context to this request's metadata."""
+    if current_context().trace_id is None:
+        return kwargs
+    metadata = dict(kwargs.get("metadata") or {})
+    metadata.setdefault(_CONTEXT_KEY, _snapshot_context())
+    kwargs["metadata"] = metadata
+    return kwargs
+
+
+def _wrap(func):
+    """Wrap a litellm entry point so it carries the context to the callback."""
+    import functools
+
+    if getattr(func, "_watcher_wrapped", False):
+        return func
+
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            return await func(*args, **_stamp(kwargs))
+    else:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **_stamp(kwargs))
+
+    wrapper._watcher_wrapped = True
+    return wrapper
+
+
+def _context_from(kwargs: Dict[str, Any]) -> TraceContext:
+    """The context this call was made in — stamped, or ambient as a fallback.
+
+    Ambient is checked second rather than first: on the non-streaming path the
+    callback runs inline and the two agree, but on the streaming path only the
+    stamp is trustworthy.
+    """
+    for holder in (kwargs.get("metadata"),
+                   (kwargs.get("litellm_params") or {}).get("metadata")):
+        if isinstance(holder, dict):
+            restored = _restore_context(holder.get(_CONTEXT_KEY))
+            if restored is not None:
+                return restored
+    return current_context()
 
 
 class WatcherLiteLLMHandler:
@@ -129,9 +235,9 @@ class WatcherLiteLLMHandler:
 
     def _record(self, kwargs, response_obj, start_time, end_time, error) -> None:
         try:
-            context = current_context()
-            tracer = get_tracer()
             kwargs = kwargs if isinstance(kwargs, dict) else {}
+            context = _context_from(kwargs)
+            tracer = get_tracer()
 
             prompt_tokens, completion_tokens = _usage_from(response_obj)
             model = str(kwargs.get("model", "") or "")
@@ -207,6 +313,29 @@ class WatcherLiteLLMHandler:
             tracer._emit(event, context)  # noqa: SLF001
 
 
+
+def _handler_class():
+    """Build the handler class, subclassing LiteLLM's ``CustomLogger``.
+
+    LiteLLM dispatches ``litellm.callbacks`` with
+    ``isinstance(callback, CustomLogger)``, so a duck-typed handler is
+    silently ignored — registered, never called, no error anywhere. The
+    subclass is created here rather than at import time because this package
+    must stay importable without LiteLLM installed.
+    """
+    try:
+        from litellm.integrations.custom_logger import CustomLogger
+    except Exception:
+        return WatcherLiteLLMHandler
+
+    class _Handler(WatcherLiteLLMHandler, CustomLogger):
+        pass
+
+    _Handler.__name__ = "WatcherLiteLLMHandler"
+    _Handler.__qualname__ = "WatcherLiteLLMHandler"
+    return _Handler
+
+
 def _as_epoch(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -253,7 +382,16 @@ def instrument(*, replace_langfuse_callback: bool = True) -> bool:
                 c for c in _saved_callbacks["failure"] if c != "langfuse"
             ]
 
-        handler = WatcherLiteLLMHandler()
+        # Wrap the entry points so each call carries its context. Without
+        # this, streaming generations detach from their turn.
+        for name in _WRAPPED_FUNCTIONS:
+            original = getattr(litellm, name, None)
+            if original is not None and not getattr(original, "_watcher_wrapped", False):
+                _originals[name] = original
+                setattr(litellm, name, _wrap(original))
+
+        handler_class = _handler_class()
+        handler = handler_class()
         callbacks = list(getattr(litellm, "callbacks", []) or [])
         if not any(isinstance(c, WatcherLiteLLMHandler) for c in callbacks):
             callbacks.append(handler)
@@ -282,6 +420,10 @@ def uninstrument() -> None:
             c for c in (getattr(litellm, "callbacks", []) or [])
             if not isinstance(c, WatcherLiteLLMHandler)
         ]
+        for name, original in _originals.items():
+            setattr(litellm, name, original)
+        _originals.clear()
+
         if "success" in _saved_callbacks:
             litellm.success_callback = _saved_callbacks["success"]
         if "failure" in _saved_callbacks:
