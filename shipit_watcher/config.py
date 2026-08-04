@@ -41,7 +41,7 @@ class WatcherConfig:
     """
 
     # ── Identity of the emitting system ──────────────────────────────
-    # Every trace is tagged with this. Multiple apps (FleetFlow, iFlota) ship
+    # Every trace is tagged with this. Multiple apps (the host application, iFlota) ship
     # to one Langfuse project, so without it the traces are unattributable.
     service_name: str = field(
         default_factory=lambda: os.getenv("WATCHER_SERVICE", "unknown-service")
@@ -95,7 +95,7 @@ class WatcherConfig:
         default_factory=lambda: _env_bool("WATCHER_PERSIST_ALL_EVENTS", False)
     )
 
-    # ── Governance (RFP Moduł F) ─────────────────────────────────────
+    # ── Governance (cost allocation) ─────────────────────────────────────
     # audit  — record everything, block nothing
     # warn   — record and flag unregistered prompts
     # enforce— refuse calls whose prompt is not registered

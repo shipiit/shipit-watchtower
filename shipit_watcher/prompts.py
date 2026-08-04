@@ -334,7 +334,7 @@ def get_prompt(name: str, *, version: Optional[str] = None,
                fallback: Optional[str] = None, **variables: Any) -> ManagedPrompt:
     """Fetch a managed prompt, optionally compiling it in one step.
 
-        prompt = wt.get_prompt("fleet-assistant", fallback=LOCAL_DEFAULT)
+        prompt = wt.get_prompt("support-assistant", fallback=LOCAL_DEFAULT)
         text = prompt.compile(company="Acme", vehicles=322)
     """
     return get_registry().get(name, version=version, label=label, fallback=fallback)
@@ -348,8 +348,8 @@ def create_prompt(name: str, template: Any, *,
     """Publish a prompt version.
 
         wt.create_prompt(
-            "fleet-assistant",
-            "You are {{company}}'s fleet assistant. Cars: {{vehicles}}.",
+            "support-assistant",
+            "You are {{company}}'s support assistant. Cars: {{items}}.",
             labels=["production"],
             config={"model": "gemini-2.5-pro", "temperature": 0.2},
         )
@@ -360,7 +360,7 @@ def create_prompt(name: str, template: Any, *,
     )
 
 
-#: How an agent's name becomes a registry key. FleetFlow runs many agents, so
+#: How an agent's name becomes a registry key. the host application runs many agents, so
 #: prompts are namespaced by agent rather than sharing one flat namespace.
 AGENT_PROMPT_PREFIX = "agent"
 
@@ -370,7 +370,7 @@ def agent_prompt_name(agent: Any) -> str:
 
     Accepts the agent object, its ``slug``, or its display name, because call
     sites have different things to hand. Display names are slugified —
-    ``"FleetFlow Assistant"`` and ``"fleetflow-assistant"`` must not resolve to
+    ``"Support Assistant"`` and ``"support-assistant"`` must not resolve to
     two different prompts, or half the fleet silently runs an older version.
     """
     raw = (
@@ -388,7 +388,7 @@ def get_agent_prompt(agent: Any, *, label: str = "production",
     """The live prompt for one agent.
 
         prompt = wt.get_agent_prompt(agent, fallback=agent.system_prompt)
-        system = prompt.compile(company=company.name, vehicles=142)
+        system = prompt.compile(company=company.name, items=142)
 
     Pass the agent's own ``system_prompt`` as ``fallback`` and adoption is
     incremental: agents with a registry entry are managed from Langfuse,

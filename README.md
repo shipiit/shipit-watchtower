@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/shipiit/ai-watchtower/main/banner.svg" alt="shipit-watcher — observability for LLM applications" width="100%">
+<img src="https://raw.githubusercontent.com/shipiit/ai-watchtower/main/hero.png" alt="shipit-watcher — observability for LLM applications: tracing, agent graphs, prompt governance, cost allocation, PII masking" width="100%">
 
 **Observability for LLM applications.**
 
@@ -90,22 +90,22 @@ is safe to import anywhere.
 ```python
 import shipit_watcher as wt
 
-wt.configure(service_name="fleetflow", environment="production")
+wt.configure(service_name="my-app", environment="production")
 wt.instrument_litellm()          # one trace per call, not three
 
 with wt.trace("chat.request",
               company_id=str(company.id),
               user_id=str(user.id),
-              cost_center="fleet-ops"):
+              cost_center="support-ops"):
 
-    with wt.get_tracer().tool("df_list_cars") as tool:
+    with wt.get_tracer().tool("list_orders") as tool:
         tool.output = list_cars(company)
 
     wt.get_tracer().decision(
         "route.expert",
-        chosen="fuel-analysis",
-        options=["fuel-analysis", "driver-communication"],
-        rationale="query mentions fuel consumption",
+        chosen="billing-analysis",
+        options=["billing-analysis", "customer-outreach"],
+        rationale="query mentions billing",
         confidence=0.87,
     )
 ```
@@ -119,8 +119,8 @@ a `trace_id` parameter threaded through it.
 @wt.observe_agent("planner")       # opens a root trace
 async def run_agent(query: str): ...
 
-@wt.observe_tool("search_fleet")   # records a tool invocation
-def search_fleet(q: str): ...
+@wt.observe_tool("search_docs")   # records a tool invocation
+def search_docs(q: str): ...
 
 @wt.observe("summarise")           # a plain span
 def summarise(text: str): ...
@@ -147,7 +147,7 @@ execution across `await` boundaries and into tasks — without being global stat
 shared between concurrent requests.
 
 ```python
-with wt.bind(company_id="acme", cost_center="fleet-ops"):
+with wt.bind(company_id="acme", cost_center="support-ops"):
     ...    # every event here carries both
 ```
 
@@ -156,7 +156,7 @@ with wt.bind(company_id="acme", cost_center="fleet-ops"):
 ## Prompt identity
 
 > *"Prompt identity carried in every call — precondition for enforce, nothing
-> else works without it."* — Shipit Watcher requirements
+> else works without it."* — design note
 
 Without it a trace can say which model ran and what it cost, but not **which
 prompt version produced this answer** — so governance, replay and
@@ -194,9 +194,9 @@ instead of a diff buried in a Python string.
 
 ```python
 answer = wt.run_prompt(
-    "fleet-assistant",
-    variables={"company": "VivaDrive", "vehicles": 142, "drivers": 100},
-    user_message="How many cars do we have?",
+    "support-assistant",
+    variables={"company": "Acme", "vehicles": 142, "drivers": 100},
+    user_message="How many items do we have?",
 )
 
 answer.text            # the answer
@@ -216,12 +216,12 @@ Everything below is that call taken apart, for when you need the pieces.
 
 An application with several agents should not share one prompt namespace.
 Prompts are keyed `agent/<slug>`, and the slug is derived from the agent so
-`"FleetFlow Assistant"` and `"fleetflow-assistant"` can never resolve to two
+`"Support Assistant"` and `"support-assistant"` can never resolve to two
 different prompts:
 
 ```python
 prompt = wt.get_agent_prompt(agent, fallback=agent.system_prompt)
-system = prompt.compile(company=company.name, vehicles=142)
+system = prompt.compile(company=company.name, items=142)
 ```
 
 Passing the agent's own `system_prompt` as `fallback` makes adoption
@@ -230,7 +230,7 @@ without one keep working exactly as before, and `prompt.registered` tells the
 compliance report which is which.
 
 ```python
-wt.agent_prompt_name("Fuel Expert")       # → "agent/fuel-expert"
+wt.agent_prompt_name("Billing Expert")       # → "agent/billing-expert"
 ```
 
 ### Attributing calls you cannot reach
@@ -254,12 +254,12 @@ This is the call an agent makes on every turn:
 ```python
 import shipit_watcher as wt
 
-prompt = wt.get_prompt("fleet-assistant", fallback=LOCAL_DEFAULT)
+prompt = wt.get_prompt("support-assistant", fallback=LOCAL_DEFAULT)
 
 system = prompt.compile(
-    company="VivaDrive",
-    vehicles=142,
-    drivers=100,
+    company="Acme",
+    items=142,
+    customers=100,
     language="English",
 )
 ```
@@ -301,7 +301,7 @@ prompt version produced it — and `config` lets the prompt carry its own model
 settings, so tuning temperature is also a registry change, not a deploy:
 
 ```python
-prompt = wt.get_prompt("fleet-assistant", fallback=LOCAL_DEFAULT)
+prompt = wt.get_prompt("support-assistant", fallback=LOCAL_DEFAULT)
 
 client = wt.LLMClient(
     model=prompt.config.get("model", "gemini-2.5-pro"),
@@ -327,10 +327,10 @@ registry is refused **before** the call is made — see
 
 ```python
 wt.create_prompt(
-    "fleet-assistant",
-    "You are {{company}}'s fleet assistant. Fleet: {{vehicles}} vehicles.",
+    "support-assistant",
+    "You are {{company}}'s support assistant. Scope: {{items}} vehicles.",
     labels=["production"],                 # omit to stage without releasing
-    tags=["fleetflow", "agent"],
+    tags=["my-app", "agent"],
     config={"model": "gemini-2.5-pro", "temperature": 0.2, "max_tokens": 2000},
     commit_message="Tighten citation rule",
 )
@@ -350,7 +350,7 @@ Pass a message list and the type is inferred:
 
 ```python
 wt.create_prompt("triage", [
-    {"role": "system", "content": "You triage fleet incidents."},
+    {"role": "system", "content": "You triage support incidents."},
     {"role": "user", "content": "{{incident}}"},
 ])
 ```
@@ -377,9 +377,9 @@ Then write the turn as you would anyway — the types come from which helper you
 reach for, not from extra arguments:
 
 ```python
-with wt.trace("fleetflow.agent.turn", user_id=user.email, session_id=sid) as ctx:
-    with wt.tool("df_list_cars") as t:          # → tool node
-        t.output = runner.run("df_list_cars")
+with wt.trace("app.agent.turn", user_id=user.email, session_id=sid) as ctx:
+    with wt.tool("list_orders") as t:          # → tool node
+        t.output = runner.run("list_orders")
 
     wt.retrieval("kb.search", query=q, chunks=chunks)   # → retriever node
     answer = client.complete(messages, prompt=prompt.identity)   # → generation
@@ -389,10 +389,10 @@ with wt.trace("fleetflow.agent.turn", user_id=user.email, session_id=sid) as ctx
 renders as:
 
 ```
-[AGENT]      fleetflow.agent.turn      4.20s
-  ├ [TOOL]       df_list_cars            0.55s
-  ├ [TOOL]       df_list_drivers         1.40s
-  └ [GENERATION] llm.fleet_assistant     1.22s   571 tok   $0.000400
+[AGENT]      app.agent.turn      4.20s
+  ├ [TOOL]       list_orders            0.55s
+  ├ [TOOL]       list_customers         1.40s
+  └ [GENERATION] llm.support_assistant     1.22s   571 tok   $0.000400
 ```
 
 | Watcher call | Langfuse node |
@@ -445,8 +445,8 @@ Applied **before** anything is persisted or leaves the process. Masking at
 display time is theatre once the raw value is on someone else's infrastructure.
 
 ```python
-wt.mask_text("Driver Jan Kowalski PESEL 44051401359, jan@fleet.pl")
-# 'Driver Jan Kowalski PESEL [PESEL], [EMAIL]'
+wt.mask_text("Jan Kowalski PESEL 44051401359, jan@example.pl")
+# 'Jan Kowalski PESEL [PESEL], [EMAIL]'
 
 wt.mask_text("Odometer 1234567890 km")
 # unchanged — ten digits, but not a valid NIP
@@ -463,7 +463,7 @@ Polish identifiers are first-class and **checksum-validated**:
 | Card | Luhn |
 | Email / Phone / IP | pattern, digit-boundary anchored |
 
-**Checksums are the point.** A fleet database is full of ten-digit numbers that
+**Checksums are the point.** A business database is full of ten-digit numbers that
 are not tax IDs. Validating the check digit is what stops this redacting the
 data the traces exist to explain.
 
@@ -509,7 +509,7 @@ tracer.retrieval("kb.policy", query="fuel policy",
 | Sink | Purpose |
 |---|---|
 | `LangfuseSink` | analysis surface — supports both v2 and v3 client shapes |
-| `DjangoSink` | the local ledger — retention, MPK reporting, your boundary |
+| `DjangoSink` | the local ledger — retention, cost-centre reporting, your boundary |
 | `ConsoleSink` | development |
 
 `FanOutSink` isolates them: **if Langfuse is unreachable the database row is
@@ -541,9 +541,9 @@ non-UUID user — so tracing by email lost the record altogether, with only a
 warning in the log:
 
 ```python
-with wt.trace("turn", user_id="rahul@vivadrive.io", session_id=session.id):
+with wt.trace("turn", user_id="user@example.com", session_id=session.id):
     ...
-# LLMCallRecord(user=None, user_ref="rahul@vivadrive.io", session_id=…)
+# LLMCallRecord(user=None, user_ref="user@example.com", session_id=…)
 ```
 
 `session_id` is stored verbatim, so a conversation in your database and a
@@ -560,9 +560,9 @@ wt.configure(persist_to_database=True, persist_all_events=True)
 
 ```
 ├─ span         planning
-│  ├─ decision      route.expert   → fuel-analysis  ✗['driver-communication']
+│  ├─ decision      route.expert   → billing-analysis  ✗['customer-outreach']
 ├─ span         execution
-│  ├─ tool          df_list_cars
+│  ├─ tool          list_orders
 │  ├─ retrieval     kb.policy      → policy.pdf #9f2a1b
 │  ├─ generation    llm.completion → 883 tok $0.001312
 ├─ span         validation
@@ -587,7 +587,7 @@ is off by default. Enable it for the systems under audit.
 Because generations land in your own table, the reports are SQL:
 
 ```python
-# Spend per MPK cost centre
+# Spend per cost centre cost centre
 LLMCallRecord.objects.values('cost_center').annotate(
     calls=Count('id'), tokens=Sum('total_tokens'), cost=Sum('total_cost'))
 
@@ -613,7 +613,7 @@ Environment first, `configure()` overrides, safe defaults throughout.
 ```bash
 export LANGFUSE_PUBLIC_KEY=pk-lf-…
 export LANGFUSE_SECRET_KEY=sk-lf-…
-export LANGFUSE_HOST=https://langfuse.digitalfleet.eu   # your instance
+export LANGFUSE_HOST=https://langfuse.example.com   # your instance
 ```
 
 `LANGFUSE_HOST` **is** the base URL, and it is not optional for self-hosting:
@@ -648,7 +648,7 @@ Everything below has a working default. Nothing else is required to start.
                │
                ▼
     ┌──────────────────────┐
-    │       Tracer         │  ← contextvars: tenant, user, MPK
+    │       Tracer         │  ← contextvars: tenant, user, cost centre
     └──────────┬───────────┘
                │  typed events
                ▼
@@ -715,7 +715,7 @@ Bugs the suite caught during development, rather than assumptions that shipped:
 import shipit_watcher as wt
 
 wt.configure(
-    service_name="fleetflow",
+    service_name="my-app",
     environment=os.getenv("ENV", "development"),
     persist_to_database=True,
 )
@@ -738,22 +738,27 @@ with wt.trace("chat.request",
 > `replace_langfuse_callback=False` — but then do not create application traces
 > as well, or you are back to duplicates.
 
-### Requirements coverage
+### What is and is not built
 
-| Module | Capability | Status |
-|---|---|---|
-| B | Filter by system, model, user, prompt, date, MPK | ✅ |
-| C | Prompt identity in every call | ✅ |
-| C | Compliance gap report | ✅ |
-| C | Block unregistered prompts (enforce) | ⚠️ flag present, blocking not implemented |
-| D | Event model + retrieval provenance | ✅ |
-| D | Decision path, why this / why not | ✅ data model — UI still to build |
-| E | MPK tagging and allocation | ✅ tagging — hierarchy and rules still custom |
-| E | Budgets and alert ladder | ❌ not started |
-| G | PII masking before persistence | ✅ |
+Honest status, so nobody discovers a gap in production.
+
+| Capability | Status |
+|---|---|
+| Filter by service, model, user, prompt, date, cost centre | ✅ |
+| Prompt identity on every call | ✅ |
+| Compliance gap report (which calls used an unregistered prompt) | ✅ |
+| Refuse unregistered prompts (`governance=enforce`) | ✅ blocks pre-call |
+| Agent graphs (typed observations over OTLP) | ✅ needs a Langfuse v3 server |
+| Prompt registry: fetch, publish, per-agent keys, stale fallback | ✅ |
+| Event model with retrieval provenance and decision paths | ✅ data model — bring your own UI |
+| Cost-centre tagging and allocation | ✅ tagging; hierarchies and rules stay yours |
+| Budgets and alert ladders | ❌ not started |
+| PII masking before persistence | ✅ |
+| LLM-as-a-judge scoring | ✅ |
+| Langfuse datasets / experiment runs | ❌ not started |
 
 ---
 
 <div align="center">
-<sub>Built for FleetFlow · reusable anywhere</sub>
+<sub>MIT licensed · framework-agnostic · works with any Python LLM stack</sub>
 </div>

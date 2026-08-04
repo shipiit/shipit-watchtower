@@ -144,7 +144,7 @@ class Tracer:
     def trace(self, name: str, *, input: Any = None, **context_fields) -> Iterator[TraceContext]:
         """Open a root trace and bind it as the ambient context.
 
-            with tracer.trace("chat.request", company_id=cid, cost_center="fleet-ops"):
+            with tracer.trace("chat.request", company_id=cid, cost_center="support-ops"):
                 ...
 
         Everything emitted inside the block attaches to this trace without

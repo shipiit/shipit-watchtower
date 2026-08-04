@@ -18,7 +18,7 @@ ingestion schema.
 
 The Langfuse Python SDK exposes this as ``as_type=`` from **3.3.1**. This
 sink instead speaks OTLP directly, over plain HTTP with no OpenTelemetry
-dependency, for a specific reason: FleetFlow pins ``langfuse==2.60.10`` and
+dependency, for a specific reason: the host application pins ``langfuse==2.60.10`` and
 ``langfuse-langchain==2.60.10.1``, and v3 removed ``client.trace()`` — the
 call the application uses in a dozen places. Requiring the v3 SDK would make
 "see the graph" a breaking dependency upgrade. Speaking the wire format keeps
@@ -216,7 +216,7 @@ class LangfuseOTLPSink:
             f"service:{config.service_name}",
             f"env:{config.environment}",
             *( [f"company:{context.company_id}"] if context.company_id else [] ),
-            *( [f"mpk:{context.cost_center}"] if context.cost_center else [] ),
+            *( [f"cost_center:{context.cost_center}"] if context.cost_center else [] ),
         ])
         if tags:
             attributes.append(_attr("langfuse.trace.tags", tags))
