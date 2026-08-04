@@ -351,13 +351,38 @@ class TestResilience:
             pass
         assert len(sink.sent) == 1
 
-    def test_flush_exports_an_unfinished_trace(self, sink):
-        """A process exiting mid-turn should still yield a partial graph."""
+    def test_flush_leaves_an_unfinished_trace_alone(self, sink):
+        """Sending a live trace's children early loses the whole trace.
+
+        They arrive referencing a root that has not been sent, and Langfuse
+        discards the trace rather than render a tree with a missing parent —
+        silently, with a 200. The agent loop calls flush() mid-turn to make
+        streaming traces appear promptly, so this is the normal case, not an
+        edge one.
+        """
         context = TraceContext(trace_id="a" * 32)
         sink.start_trace("a" * 32, "turn", context)
         sink.record(ToolInvocationEvent(name="tool.x", tool_name="x"), context)
+
         sink.flush()
-        assert sink.sent and sink.sent[0][1]
+        assert sink.sent == [], "an in-flight trace must not be sent without its root"
+
+        sink.end_trace("a" * 32, output={"ok": True})
+        _, spans = sink.sent[0]
+        assert "parentSpanId" not in spans[0], "the root goes first"
+        assert len(spans) == 2
+
+    def test_flush_sends_late_events_for_an_ended_trace(self, sink):
+        """LiteLLM's callback thread can deliver a generation after the turn
+        closed. Its parent already exists on the server, so it can go."""
+        context = TraceContext(trace_id="b" * 32)
+        sink.start_trace("b" * 32, "turn", context)
+        sink.end_trace("b" * 32)
+        sink.sent.clear()
+
+        sink.record(ToolInvocationEvent(name="tool.late", tool_name="late"), context)
+        sink.flush()
+        assert sink.sent and sink.sent[0][1], "a late event after end_trace should still ship"
 
     def test_events_without_a_trace_are_ignored(self, sink):
         sink.record(Event(name="orphan"), TraceContext())
