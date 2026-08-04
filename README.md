@@ -6,9 +6,12 @@
 
 Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 
-[![PyPI](https://img.shields.io/pypi/v/shipit-watcher?color=37E5B6&label=pypi)](https://pypi.org/project/shipit-watcher/)
+[![PyPI version](https://img.shields.io/pypi/v/shipit-watcher?label=pypi&color=37E5B6)](https://pypi.org/project/shipit-watcher/)
+[![Total downloads](https://static.pepy.tech/personalized-badge/shipit-watcher?period=total&units=international_system&left_color=grey&right_color=37E5B6&left_text=downloads)](https://pepy.tech/project/shipit-watcher)
+[![Downloads/month](https://img.shields.io/pypi/dm/shipit-watcher?label=per%20month&color=9FD9FF)](https://pypistats.org/packages/shipit-watcher)
 [![Python](https://img.shields.io/pypi/pyversions/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/)
-[![License](https://img.shields.io/badge/license-MIT-9FD9FF)](LICENSE)
+[![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
+[![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
 `Python 3.11+` · zero required dependencies · framework-agnostic · 246 tests
 
