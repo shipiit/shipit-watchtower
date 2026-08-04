@@ -318,3 +318,25 @@ class TestAgentPrompts:
             assert p.registered is False
         finally:
             pmod._registry = previous
+
+
+class TestStaleOnlyMeansStale:
+    def test_recached_fallback_is_not_stale(self):
+        """A prompt nobody has registered is re-served from cache on every
+        request. That is the steady state, not a Langfuse outage — reporting
+        it as staleness sends people hunting for a problem that isn't there."""
+        registry = PromptRegistry(client=FakeClient({}), ttl_seconds=0.01)
+        registry.get("missing", fallback="local")
+        time.sleep(0.02)
+        again = registry.get("missing", fallback="local")
+        assert again.template == "local"
+        assert again.stale is False
+        assert again.registered is False
+
+    def test_registry_value_still_goes_stale(self):
+        client = FakeClient({"g": FakePrompt("from registry")})
+        registry = PromptRegistry(client=client, ttl_seconds=0.01)
+        registry.get("g")
+        client.fail = True
+        time.sleep(0.02)
+        assert registry.get("g").stale is True
