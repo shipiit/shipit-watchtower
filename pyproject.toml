@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shipit-watcher"
-version = "1.0.0"
-description = "Observability for LLM applications — tracing, prompt governance, cost allocation and PII masking."
+version = "1.1.0"
+description = "Observability for LLM applications: tracing, agent graphs, prompt registry and governance, cost allocation, and PII masking. Works with Langfuse, LiteLLM and any Python stack."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -13,6 +13,12 @@ authors = [{ name = "Rahul Raj" }]
 keywords = ["llm", "observability", "langfuse", "litellm", "tracing", "governance"]
 
 classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Monitoring",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -23,6 +29,13 @@ classifiers = [
 # including ones that ship neither Langfuse nor LiteLLM. Backends are extras,
 # and every integration degrades to a no-op when its library is absent.
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/shipiit/ai-watchtower"
+Documentation = "https://github.com/shipiit/ai-watchtower#readme"
+Source = "https://github.com/shipiit/ai-watchtower"
+Issues = "https://github.com/shipiit/ai-watchtower/issues"
+Changelog = "https://github.com/shipiit/ai-watchtower/releases"
 
 [project.optional-dependencies]
 langfuse = ["langfuse>=2.0"]

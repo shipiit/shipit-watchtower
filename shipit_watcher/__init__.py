@@ -84,7 +84,7 @@ from .tracer import (
 )
 from .tracer import Tracer, get_tracer
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 # NOTE: there is deliberately no module-level ``tracer()`` helper. Defining one
