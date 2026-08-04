@@ -21,7 +21,8 @@ why it chose what it chose.
 ## Contents
 
 - [The problem](#the-problem)
-- [Install](#install)
+- [Setup in 60 seconds](#setup-in-60-seconds)
+- [Fields: required vs optional](#fields-what-is-required-what-is-not)
 - [Quick start](#quick-start)
 - [Core concepts](#core-concepts)
 - [Prompt identity](#prompt-identity)
@@ -61,15 +62,133 @@ then adds the dimensions that let a trace answer a business question.
 
 ---
 
-## Install
+## Setup in 60 seconds
+
+**1. Install**
 
 ```bash
-pip install -e ./ai_watchtower[all]     # langfuse + litellm + django
-pip install -e ./ai_watchtower          # core only, no dependencies
+pip install ai-watchtower[all]
 ```
 
-Every integration degrades to a no-op when its library is absent, so the core
-is safe to import anywhere.
+**2. Set two environment variables**
+
+```bash
+export LANGFUSE_PUBLIC_KEY=pk-lf-...
+export LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+**3. Start tracing**
+
+```python
+import ai_watchtower as wt
+
+wt.configure(service_name="my-app")
+wt.instrument_litellm()
+
+with wt.trace("chat.request"):
+    ...    # every LLM call inside is now traced
+```
+
+That is the whole setup. Everything below is optional refinement.
+
+---
+
+## Fields: what is required, what is not
+
+### `wt.configure(...)`
+
+| Field | Required | Default | What it does |
+|---|:---:|---|---|
+| `service_name` | **recommended** | `unknown-service` | Names the emitting system. Without it, traces from several apps are indistinguishable. |
+| `environment` | optional | `development` | `production` / `staging`. Becomes an `env:` tag. |
+| `release` | optional | `""` | Version or commit — lets you attribute a regression to a deploy. |
+| `enabled` | optional | `True` | Master off switch. |
+| `mask_pii` | optional | `True` | Redact before persistence. Leave on. |
+| `capture_content` | optional | `True` | `False` = metrics only, no prompt/response bodies. |
+| `sample_rate` | optional | `1.0` | Fraction of traces kept. Errors are always kept. |
+| `persist_to_database` | optional | `False` | Write the local ledger (Django). |
+| `persist_all_events` | optional | `False` | Persist the full tree, not just generations. |
+| `langfuse_*` | optional | from env | Overrides the environment variables. |
+
+### `wt.trace(name, ...)`
+
+| Field | Required | What it does |
+|---|:---:|---|
+| `name` | **yes** | The only required argument — e.g. `"chat.request"`. |
+| `company_id` | optional | Tenant. Needed for per-tenant cost reporting. |
+| `user_id` | optional | String. Enables per-user filtering in Langfuse. |
+| `session_id` | optional | Groups a multi-turn conversation. |
+| `cost_center` | optional | MPK / cost centre for chargeback. |
+| `channel` | optional | `web`, `api`, `voice` … |
+| `tags` | optional | Extra tags, merged with the automatic ones. |
+| `metadata` | optional | Extra metadata, merged. |
+| `input` | optional | Recorded as the trace input (masked). |
+
+```python
+# Minimal
+with wt.trace("chat.request"):
+    ...
+
+# Fully attributed
+with wt.trace("chat.request",
+              company_id=str(company.id),     # → per-tenant cost
+              user_id=str(user.id),           # → per-user filtering
+              session_id=str(session.id),     # → conversation grouping
+              cost_center="fleet-ops"):       # → chargeback
+    ...
+```
+
+### `tracer.generation(...)`
+
+| Field | Required | What it does |
+|---|:---:|---|
+| `name` | **yes** | e.g. `"llm.completion"`. |
+| `model` | recommended | Needed for per-model cost breakdown. |
+| `provider` | optional | `openai`, `litellm`, `vertex` … |
+| `prompt` | recommended | A `PromptIdentity` — enables prompt governance. |
+| `input` | optional | The prompt sent (masked). |
+
+Set usage on the yielded object as it becomes known:
+
+```python
+with tracer.generation("llm.completion", model="gpt-4o") as gen:
+    response = call_model(...)
+    gen.prompt_tokens = response.usage.prompt_tokens
+    gen.completion_tokens = response.usage.completion_tokens
+    gen.total_cost = response.cost
+    gen.output = response.text
+```
+
+### `tracer.decision(...)`
+
+| Field | Required | What it does |
+|---|:---:|---|
+| `name` | **yes** | e.g. `"route.expert"`. |
+| `chosen` | **yes** | What was picked. |
+| `options` | **yes** | Everything considered — this is what answers *"why not X"*. |
+| `rationale` | optional | One line of reasoning. |
+| `confidence` | optional | `0.0`–`1.0`. |
+
+### `wt.score(...)`
+
+| Field | Required | What it does |
+|---|:---:|---|
+| `name` | **yes** | e.g. `"user_feedback"`. |
+| `value` | **yes** | Number, bool or string — the type is inferred. |
+| `source` | optional | `HUMAN` (default), `LLM_JUDGE`, `PROGRAMMATIC`. |
+| `comment` | optional | Free text. |
+
+`trace_id`, `user_id`, `session_id` and `company_id` are filled from the
+ambient context automatically.
+
+### `wt.get_prompt(...)`
+
+| Field | Required | What it does |
+|---|:---:|---|
+| `name` | **yes** | Prompt name in Langfuse. |
+| `fallback` | **strongly recommended** | Used if the registry is unreachable *and* nothing is cached. Without it an outage yields an empty prompt. |
+| `label` | optional | `production` (default) / `staging`. |
+| `version` | optional | Pin an exact version. |
 
 ---
 
