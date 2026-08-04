@@ -1,0 +1,87 @@
+name: Bug report
+description: Something behaves differently from what the docs say.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Observability bugs are usually invisible — a trace that never arrives
+        looks the same as a trace nobody looked for. The fields below are the
+        ones that make the difference between a reproducible report and a
+        guess, so please fill them in even when they feel redundant.
+
+  - type: input
+    id: version
+    attributes:
+      label: shipit-watcher version
+      description: "`pip show shipit-watcher`"
+      placeholder: "1.0.0"
+    validations: { required: true }
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.3"
+    validations: { required: true }
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Langfuse transport
+      description: "`WATCHER_LANGFUSE_TRANSPORT` — `otlp` is the one that draws agent graphs."
+      options: ["sdk (default)", "otlp", "not using Langfuse"]
+    validations: { required: true }
+
+  - type: input
+    id: backend_versions
+    attributes:
+      label: Backend versions
+      description: Langfuse server and SDK, LiteLLM, Django — whichever are involved.
+      placeholder: "langfuse server 3.174.1, langfuse-python 2.60.10, litellm 1.63.0"
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: "A `retriever` node under the agent turn."
+    validations: { required: true }
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: >
+        If a trace is missing, say so explicitly — "no trace appeared" is a
+        symptom, not a non-event. Include the trace id if you have one.
+    validations: { required: true }
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        Smallest snippet that shows it. Please strip real API keys, customer
+        data and tenant identifiers — this is a public repository.
+      render: python
+    validations: { required: true }
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >
+        The library logs its own failures at WARNING under the `shipit_watcher`
+        logger and never raises, so a swallowed error is usually only visible
+        there. Redact keys before pasting.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I removed API keys, customer data and internal hostnames.
+          required: true

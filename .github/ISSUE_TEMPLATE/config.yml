@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question about usage
+    url: https://github.com/shipiit/ai-watchtower/discussions
+    about: For "how do I…" — issues are for defects and proposals.
+  - name: Security vulnerability
+    url: https://github.com/shipiit/ai-watchtower/security/advisories/new
+    about: >
+      Report privately. This library handles API keys and PII-masked payloads,
+      so please do not open a public issue for a security problem.

@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a capability the library does not have.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        Describe the situation, not the solution. "I cannot tell which tenant a
+        cost belongs to" leads somewhere better than "add a tenant field".
+    validations: { required: true }
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: Sketch the API you would want to write, if you have one in mind.
+      render: python
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Existing workarounds matter — if one is good enough, the feature may
+        not be worth the surface area it adds.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: >
+        This library stays dependency-free at its core and every integration
+        degrades to a no-op when its library is absent.
+      options:
+        - label: This can be built without adding a required dependency, or belongs behind an extra.
