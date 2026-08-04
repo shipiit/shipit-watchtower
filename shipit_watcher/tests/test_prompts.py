@@ -265,6 +265,11 @@ class TestCreate:
             registry.create("g", "x")
 
     def test_no_client_raises(self):
+        import shipit_watcher as wt
+
+        # Explicit, so the assertion does not depend on the machine's env.
+        wt.configure(service_name="test", langfuse_public_key="",
+                     langfuse_secret_key="")
         with pytest.raises(RuntimeError, match="LANGFUSE_PUBLIC_KEY"):
             PromptRegistry(client=None).create("g", "x")
 
