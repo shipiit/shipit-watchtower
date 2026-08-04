@@ -58,6 +58,10 @@ from .events import (
     Severity,
     ToolInvocationEvent,
 )
+from .datasets import (
+    DatasetItem, ExperimentResult, add_item, capture, create_dataset,
+    get_items, run_experiment,
+)
 from .decorators import observe, observe_agent, observe_tool
 from .identity import PromptIdentity, fingerprint_text, identify_prompt
 from .llm import run_prompt as run_prompt
@@ -84,7 +88,7 @@ from .tracer import (
 )
 from .tracer import Tracer, get_tracer
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 
 # NOTE: there is deliberately no module-level ``tracer()`` helper. Defining one
@@ -141,6 +145,9 @@ __all__ = [
     # prompt registry
     "ManagedPrompt", "PromptRegistry", "get_prompt", "create_prompt",
     "get_agent_prompt", "agent_prompt_name", "get_registry",
+    # datasets & experiments
+    "DatasetItem", "ExperimentResult", "create_dataset", "add_item", "capture",
+    "get_items", "run_experiment",
     # scoring & evaluation
     "Score", "ScoreSource", "ScoreDataType", "score", "record_score",
     "Evaluator", "LLMJudge", "JUDGE_RUBRICS", "evaluate",

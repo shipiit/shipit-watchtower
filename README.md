@@ -12,7 +12,7 @@ Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 [![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
 [![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 263 tests
+`Python 3.11+` · zero required dependencies · framework-agnostic · 288 tests
 
 ```bash
 pip install shipit-watcher
@@ -37,6 +37,7 @@ why it chose what it chose.
 - [Prompt identity](#prompt-identity)
 - [Prompt registry](#prompt-registry)
 - [Agent graphs](#agent-graphs)
+- [Datasets and experiments](#datasets-and-experiments)
 - [PII masking](#pii-masking)
 - [The event model](#the-event-model)
 - [Sinks](#sinks)
@@ -439,6 +440,57 @@ one-variable upgrade when your server supports it.
 
 ---
 
+## Datasets and experiments
+
+The Langfuse UI has an **Add to dataset** button on every trace. Right idea,
+wrong ergonomics: the cases worth keeping are the ones nobody was watching,
+and by the time you notice a bad answer you are scrolling for it.
+
+### Capture as it happens
+
+```python
+with wt.trace("agent.turn", user_id=user.email) as ctx:
+    answer = run_agent(question)
+    ctx.set_output({"answer": answer})
+
+    if user_reported_it_wrong:
+        wt.capture("regressions", input=question, metadata={"reported_by": user.email})
+```
+
+Called inside a trace, the origin fills itself in — the row keeps a link back
+to the trace that produced it, so a failing example can be re-examined rather
+than just re-read. The dataset is created on first use, so a capture path
+never fails because nobody clicked "New dataset" first.
+
+### Replay and compare
+
+```python
+results = wt.run_experiment(
+    "regressions",
+    task=lambda item: agent.answer(item.input),
+    run_name="prompt-v7",
+    evaluators=[wt.LLMJudge(judge, criterion="faithfulness")],
+)
+```
+
+Each item gets its own trace, linked to the dataset row under `run_name`. That
+is the difference between *"the new prompt feels better"* and *"the new prompt
+scores 0.82 against 0.71 on the same 40 cases"*.
+
+An item whose task raises is recorded as a failure and the run continues —
+aborting would throw away the results already gathered, and a task that fails
+on one input is itself a finding.
+
+| Call | What it does |
+|---|---|
+| `wt.capture(dataset, …)` | add the current turn, linked to its trace |
+| `wt.add_item(dataset, …)` | add an example directly; `item_id` makes it idempotent |
+| `wt.get_items(dataset)` | read every example back |
+| `wt.create_dataset(name)` | create; existing datasets are left alone |
+| `wt.run_experiment(…)` | replay, score, and record as a named run |
+
+---
+
 ## PII masking
 
 Applied **before** anything is persisted or leaves the process. Masking at
@@ -628,6 +680,7 @@ Everything below has a working default. Nothing else is required to start.
 | Variable | Default | Meaning |
 |---|---|---|
 | `WATCHER_LANGFUSE_TRANSPORT` | `sdk` | `otlp` for the [agent graph](#agent-graphs) |
+| `WATCHER_DATASET` | – | default dataset for [`capture()`](#datasets-and-experiments) |
 | `WATCHER_SERVICE` | `unknown-service` | tags every trace |
 | `WATCHER_ENV` | `development` | environment |
 | `WATCHER_ENABLED` | `true` | master switch |
@@ -755,7 +808,7 @@ Honest status, so nobody discovers a gap in production.
 | Budgets and alert ladders | ❌ not started |
 | PII masking before persistence | ✅ |
 | LLM-as-a-judge scoring | ✅ |
-| Langfuse datasets / experiment runs | ❌ not started |
+| Langfuse datasets / experiment runs | ✅ |
 
 ---
 

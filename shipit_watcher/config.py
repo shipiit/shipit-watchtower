@@ -114,6 +114,15 @@ class WatcherConfig:
         default_factory=lambda: os.getenv("WATCHER_LANGFUSE_TRANSPORT", "sdk")
     )
 
+    # ── Datasets ─────────────────────────────────────────────────────
+    #: Default dataset for `capture()`. Naming it once in the environment
+    #: means a capture call at the point of failure does not have to repeat
+    #: the dataset name — and moving to a new dataset is a config change
+    #: rather than a sweep through every call site.
+    dataset: str = field(
+        default_factory=lambda: os.getenv("WATCHER_DATASET", "")
+    )
+
     @property
     def has_langfuse_credentials(self) -> bool:
         return bool(self.langfuse_public_key and self.langfuse_secret_key)
