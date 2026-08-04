@@ -415,17 +415,34 @@ class LangfuseOTLPSink:
             logger.warning("watcher: otlp sink score failed", exc_info=True)
 
     def flush(self) -> None:
-        """Export anything still buffered.
+        """Export buffered spans for traces that have already ended.
 
-        Reachable when a process exits mid-trace; a partial graph is more
-        useful than none, and the alternative is silently losing the turn
-        that was in flight.
+        A trace still in progress is deliberately left alone. Sending its
+        children early looks harmless — they are real spans, and the endpoint
+        accepts them with a 200 — but they arrive referencing a parent that
+        has not been sent, and Langfuse discards the whole trace rather than
+        render a tree with a missing root. Nothing is logged; the trace simply
+        never appears.
+
+        That is not hypothetical: the agent loop calls flush() mid-turn to
+        make streaming traces show up promptly. Clearing ``_roots`` here left
+        ``end_trace`` with nothing to send, and every agent turn vanished
+        while the local ledger recorded it perfectly — which is a
+        particularly confusing way to lose data.
+
+        Spans whose root has already gone (a trace ended, then late events
+        arrived from LiteLLM's callback thread) still go out, because those
+        have a parent on the server to attach to.
         """
         with self._lock:
-            outstanding = list(self._pending.items())
-            self._pending.clear()
-            self._roots.clear()
-        for trace_id, spans in outstanding:
+            ready = {
+                trace_id: spans
+                for trace_id, spans in self._pending.items()
+                if trace_id not in self._roots      # i.e. the trace has ended
+            }
+            for trace_id in ready:
+                self._pending.pop(trace_id, None)
+        for trace_id, spans in ready.items():
             if spans:
                 self._send(trace_id, spans)
 
