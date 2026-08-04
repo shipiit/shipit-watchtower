@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shipit-watcher"
-version = "1.4.1"
+version = "1.4.2"
 description = "Observability for LLM applications: tracing, agent graphs, prompt registry and governance, cost allocation, and PII masking. Works with Langfuse, LiteLLM and any Python stack."
 readme = "README.md"
 requires-python = ">=3.11"
