@@ -99,6 +99,22 @@ class ManagedPrompt:
         return data
 
 
+
+def _is_not_found(exc: Exception) -> bool:
+    """Whether *exc* means "no such prompt" rather than "registry is broken"."""
+    status = getattr(exc, "status_code", None)
+    if status == 404:
+        return True
+    return "not found" in str(exc)[:200].lower()
+
+
+def _brief(exc: Exception) -> str:
+    """A one-line summary. The Langfuse SDK attaches whole HTML pages to its
+    errors, and a log line is not the place for one."""
+    text = " ".join(str(exc).split())
+    return text[:200] + ("…" if len(text) > 200 else "")
+
+
 @dataclass
 class _CacheEntry:
     prompt: ManagedPrompt
@@ -241,8 +257,17 @@ class PromptRegistry:
                 config=dict(getattr(raw, "config", {}) or {}),
                 registered=True,
             )
-        except Exception:
-            logger.warning("watcher: could not fetch prompt %r", name, exc_info=True)
+        except Exception as exc:
+            # A prompt that is simply not in the registry is an expected state
+            # — it is how the fallback ladder is meant to work — and the
+            # Langfuse SDK reports it by raising with the server's entire HTML
+            # 404 page attached. Logging that at WARNING with a traceback
+            # buried every other line in the log.
+            if _is_not_found(exc):
+                logger.info("watcher: prompt %r is not in the registry", name)
+            else:
+                logger.warning("watcher: could not fetch prompt %r: %s",
+                               name, _brief(exc))
             return None
 
     # -- authoring ------------------------------------------------------
@@ -360,13 +385,22 @@ def create_prompt(name: str, template: Any, *,
     )
 
 
-#: How an agent's name becomes a registry key. the host application runs many agents, so
-#: prompts are namespaced by agent rather than sharing one flat namespace.
+#: How an agent's name becomes a registry key. An application with several
+#: agents should not share one flat prompt namespace.
 AGENT_PROMPT_PREFIX = "agent"
+
+#: Separator between the prefix and the slug.
+#:
+#: Deliberately ``:`` and not ``/``. A slash reads better and Langfuse groups
+#: on it in the UI, but the Langfuse client does not URL-encode the name when
+#: it fetches — the path becomes ``/api/public/v2/prompts/agent/support`` and
+#: the server answers 404. The write succeeds because the name travels in the
+#: body, so a slash gives you a prompt you can publish and never read back.
+AGENT_PROMPT_SEPARATOR = ":"
 
 
 def agent_prompt_name(agent: Any) -> str:
-    """The registry key for an agent: ``agent/<slug>``.
+    """The registry key for an agent: ``agent:<slug>``.
 
     Accepts the agent object, its ``slug``, or its display name, because call
     sites have different things to hand. Display names are slugified —
@@ -379,7 +413,7 @@ def agent_prompt_name(agent: Any) -> str:
         or str(agent or "")
     )
     slug = re.sub(r"[^a-z0-9]+", "-", str(raw).strip().lower()).strip("-")
-    return f"{AGENT_PROMPT_PREFIX}/{slug}" if slug else AGENT_PROMPT_PREFIX
+    return f"{AGENT_PROMPT_PREFIX}{AGENT_PROMPT_SEPARATOR}{slug}" if slug else AGENT_PROMPT_PREFIX
 
 
 def get_agent_prompt(agent: Any, *, label: str = "production",

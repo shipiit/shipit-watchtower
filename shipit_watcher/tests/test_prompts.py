@@ -273,30 +273,30 @@ class TestAgentPrompts:
     def test_name_from_slug(self):
         class A:
             slug = "billing-expert"
-        assert agent_prompt_name(A()) == "agent/billing-expert"
+        assert agent_prompt_name(A()) == "agent:billing-expert"
 
     def test_display_name_is_slugified(self):
         """`"Support Assistant"` and `"support-assistant"` must not become
         two prompts, or half the fleet silently runs an older version."""
         class A:
             name = "Support Assistant"
-        assert agent_prompt_name(A()) == "agent/support-assistant"
-        assert agent_prompt_name("support-assistant") == "agent/support-assistant"
+        assert agent_prompt_name(A()) == "agent:support-assistant"
+        assert agent_prompt_name("support-assistant") == "agent:support-assistant"
 
     def test_slug_wins_over_display_name(self):
         class A:
             slug = "canonical"
             name = "Something Else"
-        assert agent_prompt_name(A()) == "agent/canonical"
+        assert agent_prompt_name(A()) == "agent:canonical"
 
     def test_punctuation_collapses(self):
-        assert agent_prompt_name("Support  //  Ops!!") == "agent/support-ops"
+        assert agent_prompt_name("Support  //  Ops!!") == "agent:support-ops"
 
     def test_empty_agent_degrades_to_the_prefix(self):
         assert agent_prompt_name("") == "agent"
 
     def test_resolves_per_agent(self):
-        client = FakeClient({"agent/billing-expert": FakePrompt("Fuel {{q}}", version="4")})
+        client = FakeClient({"agent:billing-expert": FakePrompt("Fuel {{q}}", version="4")})
         import shipit_watcher.prompts as pmod
 
         previous, pmod._registry = pmod._registry, PromptRegistry(client=client)

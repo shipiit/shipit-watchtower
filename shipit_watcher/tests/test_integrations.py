@@ -490,3 +490,131 @@ class TestAmbientPrompt:
         managed = ManagedPrompt(name="support-assistant", template="hi", version="3")
         with wt.use_prompt(managed):
             assert current_context().prompt["prompt_name"] == "support-assistant"
+
+
+class TestCallbackDispatch:
+    """Both bugs here were silent: the handler was registered, never called,
+    and nothing anywhere reported a problem."""
+
+    def test_handler_subclasses_litellm_custom_logger(self, fake_litellm):
+        """LiteLLM dispatches `litellm.callbacks` with
+        `isinstance(callback, CustomLogger)`. A duck-typed handler is accepted
+        into the list and then never invoked — no error, no warning, just a
+        trace with tool spans and no LLM call in it."""
+        from shipit_watcher.instrumentation.litellm import _handler_class
+
+        handler_class = _handler_class()
+        instance = handler_class()
+        try:
+            from litellm.integrations.custom_logger import CustomLogger
+        except Exception:
+            pytest.skip("litellm not installed")
+        assert isinstance(instance, CustomLogger)
+
+    def test_handler_class_works_without_litellm(self, monkeypatch):
+        """The package must stay importable with no litellm present, so the
+        subclass is built lazily rather than at import time."""
+        import builtins
+
+        from shipit_watcher.instrumentation.litellm import (
+            WatcherLiteLLMHandler, _handler_class,
+        )
+
+        real_import = builtins.__import__
+
+        def no_litellm(name, *args, **kwargs):
+            if name.startswith("litellm"):
+                raise ImportError("no litellm")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_litellm)
+        assert _handler_class() is WatcherLiteLLMHandler
+
+
+class TestContextAcrossThreads:
+    """LiteLLM runs the success handler for a streaming call on a plain
+    `threading.Thread`, which does not inherit contextvars."""
+
+    def test_context_is_stamped_onto_the_request(self):
+        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _stamp
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="t" * 32, user_id="user@example.com",
+                  session_id="s1", cost_center="ops"):
+            kwargs = _stamp({"model": "gpt-4o"})
+
+        stamped = kwargs["metadata"][_CONTEXT_KEY]
+        assert stamped["trace_id"] == "t" * 32
+        assert stamped["user_id"] == "user@example.com"
+        assert stamped["cost_center"] == "ops"
+
+    def test_nothing_is_stamped_outside_a_trace(self):
+        from shipit_watcher.instrumentation.litellm import _stamp
+
+        assert "metadata" not in _stamp({"model": "gpt-4o"})
+
+    def test_caller_metadata_is_preserved(self):
+        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _stamp
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="t" * 32):
+            kwargs = _stamp({"metadata": {"generation_name": "llm.mine"}})
+        assert kwargs["metadata"]["generation_name"] == "llm.mine"
+        assert _CONTEXT_KEY in kwargs["metadata"]
+
+    def test_stamped_context_survives_a_thread(self):
+        """The actual regression: without the stamp, a generation recorded on
+        LiteLLM's callback thread has no trace to attach to."""
+        import threading
+
+        from shipit_watcher.instrumentation.litellm import _context_from, _stamp
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="a" * 32, user_id="user@example.com"):
+            kwargs = _stamp({"model": "gpt-4o"})
+
+        seen = {}
+        thread = threading.Thread(
+            target=lambda: seen.update(context=_context_from(kwargs))
+        )
+        thread.start()
+        thread.join()
+
+        assert seen["context"].trace_id == "a" * 32
+        assert seen["context"].user_id == "user@example.com"
+
+    def test_ambient_context_is_the_fallback(self):
+        from shipit_watcher.instrumentation.litellm import _context_from
+        from shipit_watcher.context import bind
+
+        with bind(trace_id="b" * 32):
+            assert _context_from({}).trace_id == "b" * 32
+
+    def test_litellm_params_metadata_is_also_read(self):
+        """LiteLLM relocates metadata into litellm_params on some paths."""
+        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _context_from
+
+        payload = {"trace_id": "c" * 32, "user_id": "u"}
+        kwargs = {"litellm_params": {"metadata": {_CONTEXT_KEY: payload}}}
+        assert _context_from(kwargs).trace_id == "c" * 32
+
+
+class TestCostExtraction:
+    def test_hidden_params_is_preferred(self):
+        """Behind a proxy the model is an alias the local pricing map has never
+        heard of, so completion_cost returns 0 and the proxy's own figure is
+        the only real number."""
+        import types
+
+        from shipit_watcher.instrumentation.litellm import _cost_from
+
+        response = types.SimpleNamespace(_hidden_params={"response_cost": 0.00042})
+        assert _cost_from({}, response) == 0.00042
+
+    def test_standard_logging_object_is_read(self):
+        import types
+
+        from shipit_watcher.instrumentation.litellm import _cost_from
+
+        kwargs = {"standard_logging_object": {"response_cost": 0.0009}}
+        assert _cost_from(kwargs, types.SimpleNamespace()) == 0.0009
