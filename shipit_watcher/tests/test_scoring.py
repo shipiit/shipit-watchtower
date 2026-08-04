@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import pytest
 
-import ai_watchtower as wt
-from ai_watchtower.config import reset_config
-from ai_watchtower.context import bind
-from ai_watchtower.scoring import (
+import shipit_watcher as wt
+from shipit_watcher.config import reset_config
+from shipit_watcher.context import bind
+from shipit_watcher.scoring import (
     JUDGE_RUBRICS,
     Evaluator,
     LLMJudge,
@@ -28,7 +28,7 @@ from ai_watchtower.scoring import (
     ScoreSource,
     evaluate,
 )
-from ai_watchtower.tracer import Tracer
+from shipit_watcher.tracer import Tracer
 
 
 class ScoreCollectingSink:
@@ -57,7 +57,7 @@ def sink():
 
 @pytest.fixture
 def installed(sink):
-    import ai_watchtower.tracer as tmod
+    import shipit_watcher.tracer as tmod
 
     previous = tmod._tracer
     tmod._tracer = Tracer(sinks=[sink])
@@ -128,7 +128,7 @@ class TestRecording:
             def record(self, *a, **k): pass
             def flush(self): pass
 
-        import ai_watchtower.tracer as tmod
+        import shipit_watcher.tracer as tmod
         previous, tmod._tracer = tmod._tracer, Tracer(sinks=[Plain()])
         try:
             with tmod._tracer.trace("req"):
@@ -144,7 +144,7 @@ class TestRecording:
             def flush(self): pass
             def record_score(self, s): raise RuntimeError("down")
 
-        import ai_watchtower.tracer as tmod
+        import shipit_watcher.tracer as tmod
         previous, tmod._tracer = tmod._tracer, Tracer(sinks=[Exploding()])
         try:
             with tmod._tracer.trace("req"):

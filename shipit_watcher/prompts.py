@@ -1,7 +1,7 @@
 """
 Prompt registry — fetch managed prompts from Langfuse, with a safety net.
 
-This is the other half of :mod:`ai_watchtower.identity`. Identity answers
+This is the other half of :mod:`shipit_watcher.identity`. Identity answers
 *"which prompt produced this answer"*; the registry answers *"which prompt
 should we be using"*, and together they make governance possible: a prompt
 resolved from the registry is `registered=True`, everything else shows up in
@@ -30,14 +30,17 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from .config import get_config
 from .identity import PromptIdentity, fingerprint_text
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ManagedPrompt", "PromptRegistry", "get_registry", "get_prompt"]
+__all__ = [
+    "ManagedPrompt", "PromptRegistry", "get_registry",
+    "get_prompt", "create_prompt", "get_agent_prompt", "agent_prompt_name",
+]
 
 #: Langfuse's template syntax.
 _PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
@@ -136,7 +139,7 @@ class PromptRegistry:
                 host=config.langfuse_host,
             )
         except Exception:
-            logger.warning("watchtower: prompt registry client unavailable", exc_info=True)
+            logger.warning("watcher: prompt registry client unavailable", exc_info=True)
             self._client = None
         return self._client
 
@@ -185,7 +188,7 @@ class PromptRegistry:
         with self._lock:
             entry = self._cache.get(key)
         if entry is not None:
-            logger.warning("watchtower: serving stale prompt %r", name)
+            logger.warning("watcher: serving stale prompt %r", name)
             return ManagedPrompt(
                 name=entry.prompt.name, template=entry.prompt.template,
                 version=entry.prompt.version, labels=entry.prompt.labels,
@@ -193,7 +196,7 @@ class PromptRegistry:
                 stale=True,
             )
 
-        logger.warning("watchtower: prompt %r unresolved, using fallback", name)
+        logger.warning("watcher: prompt %r unresolved, using fallback", name)
         resolved = ManagedPrompt(
             name=name,
             template=fallback or "",
@@ -239,8 +242,71 @@ class PromptRegistry:
                 registered=True,
             )
         except Exception:
-            logger.warning("watchtower: could not fetch prompt %r", name, exc_info=True)
+            logger.warning("watcher: could not fetch prompt %r", name, exc_info=True)
             return None
+
+    # -- authoring ------------------------------------------------------
+
+    def create(
+        self,
+        name: str,
+        template: Any,
+        *,
+        labels: Sequence[str] = ("production",),
+        tags: Sequence[str] = (),
+        config: Optional[Dict[str, Any]] = None,
+        commit_message: Optional[str] = None,
+    ) -> ManagedPrompt:
+        """Publish a new version of a prompt and return it.
+
+        Langfuse versions prompts by name: calling this again with the same
+        name never overwrites, it appends version *n+1*. ``labels`` is what
+        actually decides which version serves traffic — publishing without
+        ``production`` stages the prompt for review rather than releasing it.
+
+        ``template`` may be a string or a list of chat messages; the type is
+        inferred so callers do not have to name it twice.
+
+        Unlike :meth:`get`, this raises. A failed write is a deployment that
+        did not happen, and silently returning a local object would let a
+        release script report success having changed nothing.
+        """
+        client = self._get_client()
+        if client is None:
+            raise RuntimeError(
+                "watcher: no Langfuse client — set LANGFUSE_PUBLIC_KEY, "
+                "LANGFUSE_SECRET_KEY and LANGFUSE_HOST before creating prompts."
+            )
+
+        is_chat = isinstance(template, list)
+        raw = client.create_prompt(
+            name=name,
+            prompt=template,
+            type="chat" if is_chat else "text",
+            labels=list(labels),
+            tags=list(tags) or None,
+            config=config or {},
+            commit_message=commit_message,
+        )
+
+        # The freshly published version supersedes anything cached under this
+        # name, including a fallback cached from before it existed.
+        self.invalidate(name)
+
+        text = getattr(raw, "prompt", template)
+        if isinstance(text, list):
+            text = "\n".join(
+                str(m.get("content", "")) if isinstance(m, dict) else str(m)
+                for m in text
+            )
+        return ManagedPrompt(
+            name=name,
+            template=str(text),
+            version=str(getattr(raw, "version", "") or "") or None,
+            labels=tuple(getattr(raw, "labels", ()) or tuple(labels)),
+            config=dict(getattr(raw, "config", {}) or (config or {})),
+            registered=True,
+        )
 
     def invalidate(self, name: Optional[str] = None) -> None:
         """Drop cached prompts — all, or just one name."""
@@ -272,3 +338,63 @@ def get_prompt(name: str, *, version: Optional[str] = None,
         text = prompt.compile(company="Acme", vehicles=322)
     """
     return get_registry().get(name, version=version, label=label, fallback=fallback)
+
+
+def create_prompt(name: str, template: Any, *,
+                  labels: Sequence[str] = ("production",),
+                  tags: Sequence[str] = (),
+                  config: Optional[Dict[str, Any]] = None,
+                  commit_message: Optional[str] = None) -> ManagedPrompt:
+    """Publish a prompt version.
+
+        wt.create_prompt(
+            "fleet-assistant",
+            "You are {{company}}'s fleet assistant. Cars: {{vehicles}}.",
+            labels=["production"],
+            config={"model": "gemini-2.5-pro", "temperature": 0.2},
+        )
+    """
+    return get_registry().create(
+        name, template, labels=labels, tags=tags,
+        config=config, commit_message=commit_message,
+    )
+
+
+#: How an agent's name becomes a registry key. FleetFlow runs many agents, so
+#: prompts are namespaced by agent rather than sharing one flat namespace.
+AGENT_PROMPT_PREFIX = "agent"
+
+
+def agent_prompt_name(agent: Any) -> str:
+    """The registry key for an agent: ``agent/<slug>``.
+
+    Accepts the agent object, its ``slug``, or its display name, because call
+    sites have different things to hand. Display names are slugified —
+    ``"FleetFlow Assistant"`` and ``"fleetflow-assistant"`` must not resolve to
+    two different prompts, or half the fleet silently runs an older version.
+    """
+    raw = (
+        getattr(agent, "slug", None)
+        or getattr(agent, "name", None)
+        or str(agent or "")
+    )
+    slug = re.sub(r"[^a-z0-9]+", "-", str(raw).strip().lower()).strip("-")
+    return f"{AGENT_PROMPT_PREFIX}/{slug}" if slug else AGENT_PROMPT_PREFIX
+
+
+def get_agent_prompt(agent: Any, *, label: str = "production",
+                     version: Optional[str] = None,
+                     fallback: Optional[str] = None) -> ManagedPrompt:
+    """The live prompt for one agent.
+
+        prompt = wt.get_agent_prompt(agent, fallback=agent.system_prompt)
+        system = prompt.compile(company=company.name, vehicles=142)
+
+    Pass the agent's own ``system_prompt`` as ``fallback`` and adoption is
+    incremental: agents with a registry entry are managed from Langfuse,
+    agents without one keep working off the database exactly as before, and
+    ``prompt.registered`` tells the compliance report which is which.
+    """
+    return get_registry().get(
+        agent_prompt_name(agent), version=version, label=label, fallback=fallback
+    )

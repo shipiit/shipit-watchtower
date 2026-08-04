@@ -25,7 +25,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
-from .config import WatchtowerConfig, get_config
+from .config import WatcherConfig, get_config
 from .context import TraceContext, bind, current_context
 from .events import (
     DecisionEvent,
@@ -52,7 +52,7 @@ class Tracer:
     """Creates traces and records typed events against configured sinks."""
 
     def __init__(self, sinks: Optional[List[Sink]] = None,
-                 config: Optional[WatchtowerConfig] = None):
+                 config: Optional[WatcherConfig] = None):
         self._config = config
         self._explicit_sinks = sinks
         self._sink: Optional[FanOutSink] = None
@@ -60,7 +60,7 @@ class Tracer:
     # -- wiring ---------------------------------------------------------
 
     @property
-    def config(self) -> WatchtowerConfig:
+    def config(self) -> WatcherConfig:
         return self._config or get_config()
 
     @property
@@ -76,13 +76,18 @@ class Tracer:
 
         if config.has_langfuse_credentials:
             try:
-                from .sinks.langfuse_sink import LangfuseSink
+                if (config.langfuse_transport or "sdk").lower() == "otlp":
+                    from .sinks.langfuse_otel_sink import LangfuseOTLPSink
 
-                sink = LangfuseSink()
+                    sink = LangfuseOTLPSink()
+                else:
+                    from .sinks.langfuse_sink import LangfuseSink
+
+                    sink = LangfuseSink()
                 if sink.available:
                     sinks.append(sink)
             except Exception:
-                logger.warning("watchtower: Langfuse sink unavailable", exc_info=True)
+                logger.warning("watcher: Langfuse sink unavailable", exc_info=True)
 
         if config.persist_to_database:
             try:
@@ -90,7 +95,7 @@ class Tracer:
 
                 sinks.append(DjangoSink())
             except Exception:
-                logger.warning("watchtower: Django sink unavailable", exc_info=True)
+                logger.warning("watcher: Django sink unavailable", exc_info=True)
 
         if not sinks and config.environment == "development":
             sinks.append(ConsoleSink())
@@ -162,21 +167,35 @@ class Tracer:
             try:
                 self.sink.start_trace(trace_id, name, context, self._prepare(input))
             except Exception:
-                logger.warning("watchtower: start_trace failed", exc_info=True)
+                logger.warning("watcher: start_trace failed", exc_info=True)
 
+            started = time.time()
             try:
                 yield context
             except Exception as exc:
-                self._safe_end_trace(trace_id, {"error": f"{type(exc).__name__}: {exc}"})
+                self._safe_end_trace(
+                    trace_id,
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                    duration_ms=int((time.time() - started) * 1000),
+                )
                 raise
             else:
-                self._safe_end_trace(trace_id, None)
+                # Whatever the caller recorded via ctx.set_output(); passing
+                # None here is what rendered as "undefined" in the UI.
+                self._safe_end_trace(
+                    trace_id,
+                    context.result.get("output"),
+                    duration_ms=int((time.time() - started) * 1000),
+                )
 
-    def _safe_end_trace(self, trace_id: str, output: Any) -> None:
+    def _safe_end_trace(self, trace_id: str, output: Any,
+                        duration_ms: int = 0) -> None:
         try:
-            self.sink.end_trace(trace_id, self._prepare(output))
+            self.sink.end_trace(
+                trace_id, self._prepare(output), {"duration_ms": duration_ms}
+            )
         except Exception:
-            logger.warning("watchtower: end_trace failed", exc_info=True)
+            logger.warning("watcher: end_trace failed", exc_info=True)
 
     # -- spans ----------------------------------------------------------
 
@@ -229,7 +248,7 @@ class Tracer:
         try:
             self.sink.record(event, context)
         except Exception:
-            logger.warning("watchtower: record failed", exc_info=True)
+            logger.warning("watcher: record failed", exc_info=True)
 
     # -- typed helpers --------------------------------------------------
 
@@ -242,6 +261,12 @@ class Tracer:
         if prompt is not None:
             node.prompt = prompt.as_metadata()
             node.tags.extend(prompt.as_tags())
+        else:
+            # Fall back to whatever `wt.use_prompt(...)` bound, so a call site
+            # that cannot reach the identity is still attributed.
+            ambient = current_context().prompt
+            if ambient:
+                node.prompt = dict(ambient)
         with self.span(name, event=node, input=input, **metadata):
             yield node
 
@@ -307,7 +332,7 @@ class Tracer:
         try:
             self.sink.flush()
         except Exception:
-            logger.warning("watchtower: flush failed", exc_info=True)
+            logger.warning("watcher: flush failed", exc_info=True)
 
 
 _tracer: Optional[Tracer] = None
@@ -319,3 +344,44 @@ def get_tracer() -> Tracer:
     if _tracer is None:
         _tracer = Tracer()
     return _tracer
+
+
+# ── Top-level shorthands ─────────────────────────────────────────────────
+#
+# `wt.tool(...)` rather than `wt.get_tracer().tool(...)`. These wrap the
+# process tracer rather than duplicating it, so a test that swaps the tracer
+# still intercepts calls made through them.
+
+def span(name: str, **kwargs: Any):
+    """Time an arbitrary step: ``with wt.span("parse.invoice"): ...``"""
+    return get_tracer().span(name, **kwargs)
+
+
+def tool(tool_name: str, **kwargs: Any):
+    """Record a tool call — a ``tool`` node in the Langfuse agent graph."""
+    return get_tracer().tool(tool_name, **kwargs)
+
+
+def generation(name: str, **kwargs: Any):
+    """Record an LLM call made outside :class:`~shipit_watcher.llm.LLMClient`."""
+    return get_tracer().generation(name, **kwargs)
+
+
+def retrieval(name: str, **kwargs: Any) -> None:
+    """Record a RAG lookup with its provenance — a ``retriever`` graph node."""
+    return get_tracer().retrieval(name, **kwargs)
+
+
+def decision(name: str, **kwargs: Any) -> None:
+    """Record a branch point, including the options not taken."""
+    return get_tracer().decision(name, **kwargs)
+
+
+def handoff(**kwargs: Any) -> None:
+    """Record delegation to another agent — an ``agent`` graph node."""
+    return get_tracer().handoff(**kwargs)
+
+
+def policy(policy_name: str, **kwargs: Any) -> None:
+    """Record a guardrail firing — a ``guardrail`` graph node."""
+    return get_tracer().policy(policy_name, **kwargs)

@@ -1,7 +1,7 @@
 """
 Prompt identity — the precondition for prompt governance.
 
-The AI Watch Tower requirements put this first: *"Prompt identity carried in
+The Shipit Watcher requirements put this first: *"Prompt identity carried in
 every call — precondition for enforce, nothing else works without it."* Without
 it a trace can say which model ran and what it cost, but not **which prompt
 version produced this answer** — so prompt governance, regression comparison

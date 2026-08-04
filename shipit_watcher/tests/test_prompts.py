@@ -13,8 +13,10 @@ import time
 
 import pytest
 
-from ai_watchtower.config import reset_config
-from ai_watchtower.prompts import ManagedPrompt, PromptRegistry, get_registry
+from shipit_watcher.config import reset_config
+from shipit_watcher.prompts import (
+    ManagedPrompt, PromptRegistry, agent_prompt_name, get_registry,
+)
 
 
 class FakePrompt:
@@ -183,3 +185,136 @@ class TestStaleFallback:
 class TestModuleLevel:
     def test_get_registry_is_singleton(self):
         assert get_registry() is get_registry()
+
+
+class RecordingClient(FakeClient):
+    """Adds the write side of the Langfuse prompt API."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.created = []
+
+    def create_prompt(self, **kwargs):
+        if self.fail:
+            raise RuntimeError("registry unreachable")
+        self.created.append(kwargs)
+        template = kwargs["prompt"]
+        created = FakePrompt(
+            template,
+            version=str(len(self.created)),
+            labels=tuple(kwargs.get("labels") or ()),
+            config=kwargs.get("config"),
+        )
+        self._prompts[kwargs["name"]] = created
+        return created
+
+
+class TestCreate:
+    def test_publishes_and_returns_the_version(self):
+        client = RecordingClient({})
+        p = PromptRegistry(client=client).create("greeting", "Hello {{name}}")
+        assert p.version == "1"
+        assert p.registered is True
+        assert client.created[0]["type"] == "text"
+
+    def test_chat_prompt_type_is_inferred(self):
+        client = RecordingClient({})
+        PromptRegistry(client=client).create(
+            "chat", [{"role": "system", "content": "hi"}]
+        )
+        assert client.created[0]["type"] == "chat"
+
+    def test_chat_prompt_still_fingerprints(self):
+        client = RecordingClient({})
+        p = PromptRegistry(client=client).create(
+            "chat", [{"role": "system", "content": "You triage"},
+                     {"role": "user", "content": "{{q}}"}]
+        )
+        assert "You triage" in p.template and "{{q}}" in p.template
+        assert p.identity.fingerprint
+
+    def test_labels_and_config_are_passed_through(self):
+        client = RecordingClient({})
+        PromptRegistry(client=client).create(
+            "g", "x", labels=["staging"], tags=["t"],
+            config={"model": "m"}, commit_message="why",
+        )
+        sent = client.created[0]
+        assert sent["labels"] == ["staging"]
+        assert sent["tags"] == ["t"]
+        assert sent["config"] == {"model": "m"}
+        assert sent["commit_message"] == "why"
+
+    def test_publishing_invalidates_the_cache(self):
+        """Otherwise a release is invisible until the TTL expires — including
+        a cached *fallback* from before the prompt existed."""
+        client = RecordingClient({})
+        registry = PromptRegistry(client=client)
+
+        stale = registry.get("g", fallback="local default")
+        assert stale.registered is False
+
+        registry.create("g", "from the registry")
+        assert registry.get("g").template == "from the registry"
+
+    def test_write_failure_raises(self):
+        """Unlike get(), which degrades: a failed publish is a release that
+        did not happen and must not be reported as success."""
+        registry = PromptRegistry(client=RecordingClient({}, fail=True))
+        with pytest.raises(RuntimeError):
+            registry.create("g", "x")
+
+    def test_no_client_raises(self):
+        with pytest.raises(RuntimeError, match="LANGFUSE_PUBLIC_KEY"):
+            PromptRegistry(client=None).create("g", "x")
+
+
+class TestAgentPrompts:
+    def test_name_from_slug(self):
+        class A:
+            slug = "fuel-expert"
+        assert agent_prompt_name(A()) == "agent/fuel-expert"
+
+    def test_display_name_is_slugified(self):
+        """`"FleetFlow Assistant"` and `"fleetflow-assistant"` must not become
+        two prompts, or half the fleet silently runs an older version."""
+        class A:
+            name = "FleetFlow Assistant"
+        assert agent_prompt_name(A()) == "agent/fleetflow-assistant"
+        assert agent_prompt_name("fleetflow-assistant") == "agent/fleetflow-assistant"
+
+    def test_slug_wins_over_display_name(self):
+        class A:
+            slug = "canonical"
+            name = "Something Else"
+        assert agent_prompt_name(A()) == "agent/canonical"
+
+    def test_punctuation_collapses(self):
+        assert agent_prompt_name("Fleet  //  Ops!!") == "agent/fleet-ops"
+
+    def test_empty_agent_degrades_to_the_prefix(self):
+        assert agent_prompt_name("") == "agent"
+
+    def test_resolves_per_agent(self):
+        client = FakeClient({"agent/fuel-expert": FakePrompt("Fuel {{q}}", version="4")})
+        import shipit_watcher.prompts as pmod
+
+        previous, pmod._registry = pmod._registry, PromptRegistry(client=client)
+        try:
+            p = pmod.get_agent_prompt("Fuel Expert")
+            assert p.version == "4" and p.registered is True
+        finally:
+            pmod._registry = previous
+
+    def test_unregistered_agent_uses_its_own_system_prompt(self):
+        """Adoption is incremental: agents without a registry entry keep
+        working off the database, and `registered` says which is which."""
+        import shipit_watcher.prompts as pmod
+
+        previous, pmod._registry = pmod._registry, PromptRegistry(client=FakeClient({}))
+        try:
+            p = pmod.get_agent_prompt("New Agent", fallback="db system prompt")
+            assert p.template == "db system prompt"
+            assert p.registered is False
+        finally:
+            pmod._registry = previous

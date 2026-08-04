@@ -68,7 +68,7 @@ class FanOutSink:
                 getattr(sink, operation)(*args, **kwargs)
             except Exception:
                 logger.warning(
-                    "watchtower: sink %s failed during %s",
+                    "watcher: sink %s failed during %s",
                     type(sink).__name__, operation, exc_info=True,
                 )
 
@@ -94,7 +94,7 @@ class ConsoleSink:
     path is legible in a terminal without opening a UI.
     """
 
-    def __init__(self, logger_name: str = "ai_watchtower.console"):
+    def __init__(self, logger_name: str = "shipit_watcher.console"):
         self._log = logging.getLogger(logger_name)
 
     def start_trace(self, trace_id: str, name: str, context: TraceContext,

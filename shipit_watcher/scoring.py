@@ -144,7 +144,7 @@ class Evaluator:
         try:
             return self.evaluate(input=input, output=output, **context)
         except Exception:
-            logger.warning("watchtower: evaluator %r failed", self.name, exc_info=True)
+            logger.warning("watcher: evaluator %r failed", self.name, exc_info=True)
             return None
 
 
@@ -293,7 +293,7 @@ def record_score(score_obj: Score) -> Score:
                 recorder(score_obj)
             except Exception:
                 logger.warning(
-                    "watchtower: sink %s failed to record score",
+                    "watcher: sink %s failed to record score",
                     type(sink).__name__, exc_info=True,
                 )
     return score_obj

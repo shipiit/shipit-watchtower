@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from ai_watchtower.masking import (
+from shipit_watcher.masking import (
     MaskingPolicy,
     Redactor,
     _iban_ok,

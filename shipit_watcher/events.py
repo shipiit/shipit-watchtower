@@ -124,7 +124,7 @@ class GenerationEvent(Event):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_cost: float = 0.0
-    #: Set from ai_watchtower.identity.PromptIdentity.as_metadata()
+    #: Set from shipit_watcher.identity.PromptIdentity.as_metadata()
     prompt: Dict[str, Any] = field(default_factory=dict)
 
     @property

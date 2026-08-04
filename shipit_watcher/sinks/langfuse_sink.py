@@ -6,7 +6,7 @@ auto-callback. That distinction is the fix for the duplicate-trace problem: if
 both this SDK *and* ``litellm.success_callback = ["langfuse"]`` are active, the
 same call is logged twice under different names — once as ``chat.session`` with
 full metadata, once as a flat ``litellm-completion`` with ``{}``. See
-``ai_watchtower.instrumentation.litellm``.
+``shipit_watcher.instrumentation.litellm``.
 
 Supports both the v2 (``langfuse.trace()``) and v3 (``start_span()``) client
 shapes, because Langfuse ships breaking changes often and the host app's pinned
@@ -58,7 +58,7 @@ class LangfuseSink:
                 host=config.langfuse_host,
             )
         except Exception:
-            logger.warning("watchtower: could not construct Langfuse client", exc_info=True)
+            logger.warning("watcher: could not construct Langfuse client", exc_info=True)
             return None
 
     @property
@@ -108,9 +108,9 @@ class LangfuseSink:
                 span = self._client.start_span(name=name, input=input_data, metadata=metadata)
                 self._traces[trace_id] = span
             except Exception:
-                logger.warning("watchtower: langfuse start_trace failed", exc_info=True)
+                logger.warning("watcher: langfuse start_trace failed", exc_info=True)
         except Exception:
-            logger.warning("watchtower: langfuse start_trace failed", exc_info=True)
+            logger.warning("watcher: langfuse start_trace failed", exc_info=True)
 
     def end_trace(self, trace_id: str, output: Any = None,
                   metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -128,7 +128,7 @@ class LangfuseSink:
             elif hasattr(trace, "end"):
                 trace.end(output=output)
         except Exception:
-            logger.warning("watchtower: langfuse end_trace failed", exc_info=True)
+            logger.warning("watcher: langfuse end_trace failed", exc_info=True)
 
     # -- events ---------------------------------------------------------
 
@@ -182,7 +182,7 @@ class LangfuseSink:
                 else:
                     self._record_span(target, event, None, payload)
             except Exception:
-                logger.warning("watchtower: langfuse record failed", exc_info=True)
+                logger.warning("watcher: langfuse record failed", exc_info=True)
 
     def _record_generation(self, trace, event, context, payload) -> None:
         usage = {
@@ -253,7 +253,7 @@ class LangfuseSink:
                 payload["observation_id"] = score.observation_id
             self._client.score(**{k: v for k, v in payload.items() if v is not None})
         except Exception:
-            logger.warning("watchtower: langfuse score failed", exc_info=True)
+            logger.warning("watcher: langfuse score failed", exc_info=True)
 
     def flush(self) -> None:
         if not self.available:
@@ -261,4 +261,4 @@ class LangfuseSink:
         try:
             self._client.flush()
         except Exception:
-            logger.warning("watchtower: langfuse flush failed", exc_info=True)
+            logger.warning("watcher: langfuse flush failed", exc_info=True)

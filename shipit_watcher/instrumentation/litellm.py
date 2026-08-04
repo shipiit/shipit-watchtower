@@ -14,7 +14,7 @@ trace. Add a proxy-side callback and it becomes three.
 
 The rule this module enforces: **exactly one component owns tracing.** Calling
 :func:`instrument` removes LiteLLM's Langfuse callback and installs a handler
-that reports into the current watchtower trace instead. One trace per request,
+that reports into the current watcher trace instead. One trace per request,
 correctly parented, carrying tenant, cost centre and prompt identity.
 
 If you would rather keep LiteLLM's native callback, do not call
@@ -74,8 +74,37 @@ def _cost_from(kwargs: Dict[str, Any], response: Any) -> float:
         return 0.0
 
 
-class WatchtowerLiteLLMHandler:
-    """LiteLLM ``CustomLogger`` that reports into the ambient watchtower trace.
+#: LiteLLM's own call-type names, translated into operation names. The point
+#: of the whole module: `litellm-aembedding` says how the bytes travelled;
+#: `rag.embedding` says what the system was doing.
+_CALL_NAMES = {
+    "embedding": "rag.embedding",
+    "aembedding": "rag.embedding",
+    "completion": "llm.completion",
+    "acompletion": "llm.completion",
+    "text_completion": "llm.completion",
+    "atext_completion": "llm.completion",
+    "image_generation": "llm.image",
+    "transcription": "llm.transcription",
+    "moderation": "llm.moderation",
+}
+
+
+def _call_name(kwargs: Dict[str, Any]) -> str:
+    """What to call this call.
+
+    An explicit `metadata["generation_name"]` wins — a caller that named the
+    operation knows more than we can infer.
+    """
+    explicit = (kwargs.get("metadata") or {}).get("generation_name")
+    if explicit:
+        return str(explicit)
+    call_type = str(kwargs.get("call_type", "") or "completion")
+    return _CALL_NAMES.get(call_type, f"llm.{call_type}")
+
+
+class WatcherLiteLLMHandler:
+    """LiteLLM ``CustomLogger`` that reports into the ambient watcher trace.
 
     LiteLLM instantiates and calls this itself, on both the sync and async
     paths, so every method is defensive: a raise here would surface inside the
@@ -101,20 +130,26 @@ class WatchtowerLiteLLMHandler:
     def _record(self, kwargs, response_obj, start_time, end_time, error) -> None:
         try:
             context = current_context()
-            if context.trace_id is None:
-                # No ambient trace: the call was made outside an instrumented
-                # path. Dropping it is deliberate — emitting an unparented
-                # trace is exactly the orphan noise this replaces.
-                return
-
             tracer = get_tracer()
             kwargs = kwargs if isinstance(kwargs, dict) else {}
 
             prompt_tokens, completion_tokens = _usage_from(response_obj)
             model = str(kwargs.get("model", "") or "")
+            name = _call_name(kwargs)
+
+            if context.trace_id is None:
+                # No ambient trace — a background job: reindexing, a nightly
+                # report. Dropping these used to seem right, but it means
+                # turning instrumentation on makes work *disappear* from
+                # Langfuse. Give it a trace of its own instead, named after
+                # what it is: `rag.embedding`, never `litellm-aembedding`.
+                self._record_standalone(tracer, name, model, prompt_tokens,
+                                        completion_tokens, kwargs, response_obj,
+                                        start_time, end_time, error)
+                return
 
             event = GenerationEvent(
-                name=kwargs.get("litellm_call_id") and "llm.completion" or "llm.completion",
+                name=name,
                 model=model,
                 provider=str(
                     (kwargs.get("litellm_params", {}) or {}).get("custom_llm_provider", "")
@@ -125,10 +160,16 @@ class WatchtowerLiteLLMHandler:
                 parent_id=context.parent_id,
             )
 
-            # Prompt identity, if the caller bound one for this call.
-            prompt_meta = (kwargs.get("metadata") or {}).get("watchtower_prompt")
-            if isinstance(prompt_meta, dict):
-                event.prompt = prompt_meta
+            # Prompt identity: explicit per-call metadata wins, then whatever
+            # `wt.use_prompt(...)` bound around this call. The ambient fallback
+            # is what makes attribution complete — a `litellm.completion` deep
+            # inside a tool has no way to pass metadata, and without it that
+            # call is indistinguishable from an unregistered prompt.
+            prompt_meta = (kwargs.get("metadata") or {}).get("watcher_prompt")
+            if not isinstance(prompt_meta, dict):
+                prompt_meta = context.prompt
+            if isinstance(prompt_meta, dict) and prompt_meta:
+                event.prompt = dict(prompt_meta)
 
             event.started_at = _as_epoch(start_time) or time.time()
             event.ended_at = _as_epoch(end_time) or time.time()
@@ -139,7 +180,31 @@ class WatchtowerLiteLLMHandler:
 
             tracer._emit(event, context)  # noqa: SLF001 — internal by design
         except Exception:
-            logger.warning("watchtower: litellm handler failed", exc_info=True)
+            logger.warning("watcher: litellm handler failed", exc_info=True)
+
+
+    def _record_standalone(self, tracer, name, model, prompt_tokens,
+                           completion_tokens, kwargs, response_obj,
+                           start_time, end_time, error) -> None:
+        """Trace a call made outside any request, as its own named trace."""
+        with tracer.trace(name, channel="background") as context:
+            event = GenerationEvent(
+                name=name,
+                model=model,
+                provider=str(
+                    (kwargs.get("litellm_params", {}) or {}).get("custom_llm_provider", "")
+                ),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_cost=_cost_from(kwargs, response_obj),
+                parent_id=context.parent_id,
+            )
+            event.started_at = _as_epoch(start_time) or time.time()
+            event.ended_at = _as_epoch(end_time) or time.time()
+            if error is not None:
+                event.severity = Severity.ERROR
+                event.status_message = str(error)[:500]
+            tracer._emit(event, context)  # noqa: SLF001
 
 
 def _as_epoch(value: Any) -> Optional[float]:
@@ -173,7 +238,7 @@ def instrument(*, replace_langfuse_callback: bool = True) -> bool:
     try:
         import litellm
     except ImportError:
-        logger.info("watchtower: litellm not installed; skipping instrumentation")
+        logger.info("watcher: litellm not installed; skipping instrumentation")
         return False
 
     try:
@@ -188,20 +253,20 @@ def instrument(*, replace_langfuse_callback: bool = True) -> bool:
                 c for c in _saved_callbacks["failure"] if c != "langfuse"
             ]
 
-        handler = WatchtowerLiteLLMHandler()
+        handler = WatcherLiteLLMHandler()
         callbacks = list(getattr(litellm, "callbacks", []) or [])
-        if not any(isinstance(c, WatchtowerLiteLLMHandler) for c in callbacks):
+        if not any(isinstance(c, WatcherLiteLLMHandler) for c in callbacks):
             callbacks.append(handler)
         litellm.callbacks = callbacks
 
         _instrumented = True
         logger.info(
-            "watchtower: litellm instrumented (langfuse callback %s)",
+            "watcher: litellm instrumented (langfuse callback %s)",
             "removed" if replace_langfuse_callback else "kept",
         )
         return True
     except Exception:
-        logger.warning("watchtower: litellm instrumentation failed", exc_info=True)
+        logger.warning("watcher: litellm instrumentation failed", exc_info=True)
         return False
 
 
@@ -215,14 +280,14 @@ def uninstrument() -> None:
 
         litellm.callbacks = [
             c for c in (getattr(litellm, "callbacks", []) or [])
-            if not isinstance(c, WatchtowerLiteLLMHandler)
+            if not isinstance(c, WatcherLiteLLMHandler)
         ]
         if "success" in _saved_callbacks:
             litellm.success_callback = _saved_callbacks["success"]
         if "failure" in _saved_callbacks:
             litellm.failure_callback = _saved_callbacks["failure"]
     except Exception:
-        logger.warning("watchtower: litellm uninstrument failed", exc_info=True)
+        logger.warning("watcher: litellm uninstrument failed", exc_info=True)
     finally:
         _instrumented = False
 

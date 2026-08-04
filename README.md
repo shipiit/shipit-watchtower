@@ -1,12 +1,20 @@
 <div align="center">
 
-# 🗼 AI Watchtower
+<img src="https://raw.githubusercontent.com/shipiit/ai-watchtower/main/banner.svg" alt="shipit-watcher — observability for LLM applications" width="100%">
 
 **Observability for LLM applications.**
 
-Tracing · Prompt governance · Cost allocation · PII masking
+Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 148 tests · 90% coverage
+[![PyPI](https://img.shields.io/pypi/v/shipit-watcher?color=37E5B6&label=pypi)](https://pypi.org/project/shipit-watcher/)
+[![Python](https://img.shields.io/pypi/pyversions/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/)
+[![License](https://img.shields.io/badge/license-MIT-9FD9FF)](LICENSE)
+
+`Python 3.11+` · zero required dependencies · framework-agnostic · 246 tests
+
+```bash
+pip install shipit-watcher
+```
 
 </div>
 
@@ -21,11 +29,12 @@ why it chose what it chose.
 ## Contents
 
 - [The problem](#the-problem)
-- [Setup in 60 seconds](#setup-in-60-seconds)
-- [Fields: required vs optional](#fields-what-is-required-what-is-not)
+- [Install](#install)
 - [Quick start](#quick-start)
 - [Core concepts](#core-concepts)
 - [Prompt identity](#prompt-identity)
+- [Prompt registry](#prompt-registry)
+- [Agent graphs](#agent-graphs)
 - [PII masking](#pii-masking)
 - [The event model](#the-event-model)
 - [Sinks](#sinks)
@@ -57,145 +66,27 @@ makes LiteLLM open its own trace, the application opens another, and a
 proxy-side callback opens a third. None of them carries the tenant, the cost
 centre, or which prompt produced the answer.
 
-Watchtower settles the ownership question — **exactly one component traces** —
+Watcher settles the ownership question — **exactly one component traces** —
 then adds the dimensions that let a trace answer a business question.
 
 ---
 
-## Setup in 60 seconds
-
-**1. Install**
+## Install
 
 ```bash
-pip install ai-watchtower[all]
+pip install shipit-watcher[all]     # langfuse + litellm + django
+pip install shipit-watcher          # core only, no dependencies
 ```
 
-**2. Set two environment variables**
-
-```bash
-export LANGFUSE_PUBLIC_KEY=pk-lf-...
-export LANGFUSE_SECRET_KEY=sk-lf-...
-```
-
-**3. Start tracing**
-
-```python
-import ai_watchtower as wt
-
-wt.configure(service_name="my-app")
-wt.instrument_litellm()
-
-with wt.trace("chat.request"):
-    ...    # every LLM call inside is now traced
-```
-
-That is the whole setup. Everything below is optional refinement.
-
----
-
-## Fields: what is required, what is not
-
-### `wt.configure(...)`
-
-| Field | Required | Default | What it does |
-|---|:---:|---|---|
-| `service_name` | **recommended** | `unknown-service` | Names the emitting system. Without it, traces from several apps are indistinguishable. |
-| `environment` | optional | `development` | `production` / `staging`. Becomes an `env:` tag. |
-| `release` | optional | `""` | Version or commit — lets you attribute a regression to a deploy. |
-| `enabled` | optional | `True` | Master off switch. |
-| `mask_pii` | optional | `True` | Redact before persistence. Leave on. |
-| `capture_content` | optional | `True` | `False` = metrics only, no prompt/response bodies. |
-| `sample_rate` | optional | `1.0` | Fraction of traces kept. Errors are always kept. |
-| `persist_to_database` | optional | `False` | Write the local ledger (Django). |
-| `persist_all_events` | optional | `False` | Persist the full tree, not just generations. |
-| `langfuse_*` | optional | from env | Overrides the environment variables. |
-
-### `wt.trace(name, ...)`
-
-| Field | Required | What it does |
-|---|:---:|---|
-| `name` | **yes** | The only required argument — e.g. `"chat.request"`. |
-| `company_id` | optional | Tenant. Needed for per-tenant cost reporting. |
-| `user_id` | optional | String. Enables per-user filtering in Langfuse. |
-| `session_id` | optional | Groups a multi-turn conversation. |
-| `cost_center` | optional | MPK / cost centre for chargeback. |
-| `channel` | optional | `web`, `api`, `voice` … |
-| `tags` | optional | Extra tags, merged with the automatic ones. |
-| `metadata` | optional | Extra metadata, merged. |
-| `input` | optional | Recorded as the trace input (masked). |
-
-```python
-# Minimal
-with wt.trace("chat.request"):
-    ...
-
-# Fully attributed
-with wt.trace("chat.request",
-              company_id=str(company.id),     # → per-tenant cost
-              user_id=str(user.id),           # → per-user filtering
-              session_id=str(session.id),     # → conversation grouping
-              cost_center="fleet-ops"):       # → chargeback
-    ...
-```
-
-### `tracer.generation(...)`
-
-| Field | Required | What it does |
-|---|:---:|---|
-| `name` | **yes** | e.g. `"llm.completion"`. |
-| `model` | recommended | Needed for per-model cost breakdown. |
-| `provider` | optional | `openai`, `litellm`, `vertex` … |
-| `prompt` | recommended | A `PromptIdentity` — enables prompt governance. |
-| `input` | optional | The prompt sent (masked). |
-
-Set usage on the yielded object as it becomes known:
-
-```python
-with tracer.generation("llm.completion", model="gpt-4o") as gen:
-    response = call_model(...)
-    gen.prompt_tokens = response.usage.prompt_tokens
-    gen.completion_tokens = response.usage.completion_tokens
-    gen.total_cost = response.cost
-    gen.output = response.text
-```
-
-### `tracer.decision(...)`
-
-| Field | Required | What it does |
-|---|:---:|---|
-| `name` | **yes** | e.g. `"route.expert"`. |
-| `chosen` | **yes** | What was picked. |
-| `options` | **yes** | Everything considered — this is what answers *"why not X"*. |
-| `rationale` | optional | One line of reasoning. |
-| `confidence` | optional | `0.0`–`1.0`. |
-
-### `wt.score(...)`
-
-| Field | Required | What it does |
-|---|:---:|---|
-| `name` | **yes** | e.g. `"user_feedback"`. |
-| `value` | **yes** | Number, bool or string — the type is inferred. |
-| `source` | optional | `HUMAN` (default), `LLM_JUDGE`, `PROGRAMMATIC`. |
-| `comment` | optional | Free text. |
-
-`trace_id`, `user_id`, `session_id` and `company_id` are filled from the
-ambient context automatically.
-
-### `wt.get_prompt(...)`
-
-| Field | Required | What it does |
-|---|:---:|---|
-| `name` | **yes** | Prompt name in Langfuse. |
-| `fallback` | **strongly recommended** | Used if the registry is unreachable *and* nothing is cached. Without it an outage yields an empty prompt. |
-| `label` | optional | `production` (default) / `staging`. |
-| `version` | optional | Pin an exact version. |
+Every integration degrades to a no-op when its library is absent, so the core
+is safe to import anywhere.
 
 ---
 
 ## Quick start
 
 ```python
-import ai_watchtower as wt
+import shipit_watcher as wt
 
 wt.configure(service_name="fleetflow", environment="production")
 wt.instrument_litellm()          # one trace per call, not three
@@ -263,7 +154,7 @@ with wt.bind(company_id="acme", cost_center="fleet-ops"):
 ## Prompt identity
 
 > *"Prompt identity carried in every call — precondition for enforce, nothing
-> else works without it."* — AI Watch Tower requirements
+> else works without it."* — Shipit Watcher requirements
 
 Without it a trace can say which model ran and what it cost, but not **which
 prompt version produced this answer** — so governance, replay and
@@ -288,6 +179,261 @@ prompt = wt.identify_prompt(
 The fingerprint makes a compliance gap report possible on day one, with no
 registry: group by fingerprint, and any prompt with no registry entry is by
 definition unregistered.
+
+---
+
+## Prompt registry
+
+Fingerprints tell you *which* prompt ran. The registry decides *what runs* —
+so a prompt change becomes a release someone can review, label and roll back,
+instead of a diff buried in a Python string.
+
+### The whole turn, in one call
+
+```python
+answer = wt.run_prompt(
+    "fleet-assistant",
+    variables={"company": "VivaDrive", "vehicles": 142, "drivers": 100},
+    user_message="How many cars do we have?",
+)
+
+answer.text            # the answer
+answer.total_cost      # what it cost
+answer.total_tokens    # 467 → 121
+```
+
+`run_prompt` resolves the live prompt, compiles it, takes `model`,
+`temperature` and `max_tokens` from the prompt's own `config`, calls the
+model, links the generation to that exact version, and records all of it.
+Credentials default to `LITELLM_API_BASE` / `LITELLM_API_KEY`, so the common
+case passes neither.
+
+Everything below is that call taken apart, for when you need the pieces.
+
+### One prompt per agent
+
+An application with several agents should not share one prompt namespace.
+Prompts are keyed `agent/<slug>`, and the slug is derived from the agent so
+`"FleetFlow Assistant"` and `"fleetflow-assistant"` can never resolve to two
+different prompts:
+
+```python
+prompt = wt.get_agent_prompt(agent, fallback=agent.system_prompt)
+system = prompt.compile(company=company.name, vehicles=142)
+```
+
+Passing the agent's own `system_prompt` as `fallback` makes adoption
+incremental — agents with a registry entry are managed from Langfuse, agents
+without one keep working exactly as before, and `prompt.registered` tells the
+compliance report which is which.
+
+```python
+wt.agent_prompt_name("Fuel Expert")       # → "agent/fuel-expert"
+```
+
+### Attributing calls you cannot reach
+
+A `litellm.completion` three frames deep inside a tool has no way to pass a
+prompt identity. Bind it to the scope instead:
+
+```python
+with wt.use_prompt(prompt):
+    ...                       # every LLM call in here is attributed
+```
+
+Without this, prompt attribution only covers the call sites you remembered to
+annotate — which is exactly the gap governance cannot have. Works for
+`LLMClient` and for direct `litellm` calls under `instrument_litellm()`.
+
+### Fetch the latest stable prompt
+
+This is the call an agent makes on every turn:
+
+```python
+import shipit_watcher as wt
+
+prompt = wt.get_prompt("fleet-assistant", fallback=LOCAL_DEFAULT)
+
+system = prompt.compile(
+    company="VivaDrive",
+    vehicles=142,
+    drivers=100,
+    language="English",
+)
+```
+
+`get_prompt` returns the version currently labelled **`production`** — not the
+newest version. Publishing and releasing are separate acts: a new version goes
+live only when the `production` label moves onto it, which you do from the
+Langfuse UI or from code, with no deploy.
+
+| Argument | Default | What it selects |
+|---|---|---|
+| `label` | `"production"` | The deployment channel. `"staging"` to try one first. |
+| `version` | – | An exact version. Pins a run; overrides `label`. |
+| `fallback` | – | Template used if the prompt cannot be resolved at all. |
+
+### Why it does not fail your request
+
+Prompts sit on the critical path of every turn, so resolution degrades in
+steps rather than raising:
+
+```
+fresh cache  →  registry  →  stale cache  →  fallback
+   0.01ms        ~30ms       last good      your string
+```
+
+The **stale** rung is the one that earns its keep. If Langfuse is unreachable
+the agent keeps answering with the last prompt it successfully fetched, marked
+`prompt.stale is True` so a dashboard can show the degradation instead of the
+outage hiding.
+
+Fallbacks are cached too. A prompt missing from the registry is missing on
+every request, so without caching each one pays a round-trip and a 404 to
+learn the same thing.
+
+### Wire it into an agent
+
+The identity travels with the call, so every generation in Langfuse says which
+prompt version produced it — and `config` lets the prompt carry its own model
+settings, so tuning temperature is also a registry change, not a deploy:
+
+```python
+prompt = wt.get_prompt("fleet-assistant", fallback=LOCAL_DEFAULT)
+
+client = wt.LLMClient(
+    model=prompt.config.get("model", "gemini-2.5-pro"),
+    api_base=os.environ["LITELLM_API_BASE"],
+    api_key=os.environ["LITELLM_API_KEY"],
+    temperature=prompt.config.get("temperature", 0.2),
+)
+
+with wt.trace("agent.turn", user_id=user.email, session_id=session.id) as ctx:
+    answer = client.complete(
+        [{"role": "system", "content": prompt.compile(**variables)},
+         {"role": "user", "content": question}],
+        prompt=prompt.identity,        # ← links the generation to the version
+    )
+    ctx.set_output({"answer": answer.text})
+```
+
+With `WATCHER_GOVERNANCE=enforce`, a prompt that did not come from the
+registry is refused **before** the call is made — see
+[Configuration](#configuration).
+
+### Publish a version
+
+```python
+wt.create_prompt(
+    "fleet-assistant",
+    "You are {{company}}'s fleet assistant. Fleet: {{vehicles}} vehicles.",
+    labels=["production"],                 # omit to stage without releasing
+    tags=["fleetflow", "agent"],
+    config={"model": "gemini-2.5-pro", "temperature": 0.2, "max_tokens": 2000},
+    commit_message="Tighten citation rule",
+)
+```
+
+Langfuse versions by name — this never overwrites, it appends version *n+1*.
+Publishing with `labels=[]` stages the prompt for review; moving the
+`production` label is the release.
+
+Unlike `get_prompt`, this **raises** on failure. A write that did not land is
+a release that did not happen, and a release script must not report success
+having changed nothing.
+
+### Chat prompts
+
+Pass a message list and the type is inferred:
+
+```python
+wt.create_prompt("triage", [
+    {"role": "system", "content": "You triage fleet incidents."},
+    {"role": "user", "content": "{{incident}}"},
+])
+```
+
+They fingerprint like text prompts — the messages are joined before hashing —
+so a chat prompt is just as traceable as a string one.
+
+---
+
+## Agent graphs
+
+Langfuse draws a graph of a trace only when its observations carry a *semantic
+type* — `agent`, `tool`, `retriever`, `embedding`, `guardrail`, `chain`,
+`evaluator`. A trace of undifferentiated spans renders as a list, because
+nothing in it says which box is an agent and which is a tool it called.
+
+Turn it on:
+
+```bash
+export WATCHER_LANGFUSE_TRANSPORT=otlp
+```
+
+Then write the turn as you would anyway — the types come from which helper you
+reach for, not from extra arguments:
+
+```python
+with wt.trace("fleetflow.agent.turn", user_id=user.email, session_id=sid) as ctx:
+    with wt.tool("df_list_cars") as t:          # → tool node
+        t.output = runner.run("df_list_cars")
+
+    wt.retrieval("kb.search", query=q, chunks=chunks)   # → retriever node
+    answer = client.complete(messages, prompt=prompt.identity)   # → generation
+    ctx.set_output({"answer": answer.text})
+```
+
+renders as:
+
+```
+[AGENT]      fleetflow.agent.turn      4.20s
+  ├ [TOOL]       df_list_cars            0.55s
+  ├ [TOOL]       df_list_drivers         1.40s
+  └ [GENERATION] llm.fleet_assistant     1.22s   571 tok   $0.000400
+```
+
+| Watcher call | Langfuse node |
+|---|---|
+| `wt.trace(...)` | `agent` (the graph's entry point) |
+| `wt.tool(...)` | `tool` |
+| `wt.retrieval(...)` | `retriever` |
+| `wt.generation(...)` / `LLMClient` | `generation` |
+| `wt.policy(...)` | `guardrail` |
+| `wt.decision(...)` | `chain` |
+| `wt.handoff(...)` | `agent` |
+| `wt.span(...)` | `span` — no graph node, by design |
+
+### Why a separate transport
+
+Semantic types cannot be sent over the classic ingestion API. Offered one, a
+Langfuse v3 server replies:
+
+```
+"Invalid option: expected one of \"GENERATION\"|\"SPAN\"|\"EVENT\""
+```
+
+They exist only over OTLP, as the span attribute
+`langfuse.observation.type`. The Langfuse Python SDK exposes this as `as_type=`
+from **3.3.1** — but v3 also removed `client.trace()`, which most existing
+integrations call. So this sink speaks OTLP directly over plain HTTP, with no
+OpenTelemetry dependency and no SDK upgrade: only the *server* has to be v3.
+
+Requirements: a Langfuse server ≥ 3.x. Check yours with
+`curl $LANGFUSE_HOST/api/public/health`.
+
+### `sdk` vs `otlp`
+
+| | `sdk` (default) | `otlp` |
+|---|---|---|
+| Server needed | any | v3+ |
+| Agent graph | ✗ | ✓ |
+| Observation types | span / generation | all ten |
+| Delivery | Langfuse client's own batching | one request per finished trace |
+
+Both carry user, session, tags, tokens, cost and prompt version. The only
+difference is the graph — so `sdk` stays the default, and `otlp` is a
+one-variable upgrade when your server supports it.
 
 ---
 
@@ -382,6 +528,25 @@ Langfuse is where you *look* at traces. The database is where they are *kept*.
 One row per generation: tenant, cost centre, model, tokens, cost, prompt
 identity, latency, and the `trace_id` that joins back to Langfuse.
 
+Enable it with `WATCHER_PERSIST_DB=true` (Django apps only — the sink is
+imported lazily, so nothing here loads in a process without an ORM).
+
+**User identity is not assumed to be a primary key.** `user` is a FK and
+resolves only when the value *is* a pk; `user_ref` always holds the raw
+identifier you passed, whether that is a UUID, an email, or an SSO subject.
+Both are indexed. Without this split, Django rejects the **entire row** for a
+non-UUID user — so tracing by email lost the record altogether, with only a
+warning in the log:
+
+```python
+with wt.trace("turn", user_id="rahul@vivadrive.io", session_id=session.id):
+    ...
+# LLMCallRecord(user=None, user_ref="rahul@vivadrive.io", session_id=…)
+```
+
+`session_id` is stored verbatim, so a conversation in your database and a
+session in Langfuse are the same string and join without a mapping table.
+
 ### `TraceEventRecord` — the full tree *(opt-in)*
 
 Every event including parent/child edges, so the decision path is
@@ -441,17 +606,35 @@ TraceEventRecord.objects.filter(company=company, event_type='decision')
 
 Environment first, `configure()` overrides, safe defaults throughout.
 
+### The three you actually have to set
+
+```bash
+export LANGFUSE_PUBLIC_KEY=pk-lf-…
+export LANGFUSE_SECRET_KEY=sk-lf-…
+export LANGFUSE_HOST=https://langfuse.digitalfleet.eu   # your instance
+```
+
+`LANGFUSE_HOST` **is** the base URL, and it is not optional for self-hosting:
+it defaults to Langfuse Cloud, so leaving it unset silently ships your traces
+to `cloud.langfuse.com` — where the keys do not work and nothing appears. The
+keys are two rather than one because Langfuse itself issues them that way: the
+public key identifies the project, the secret key authorises the write, and
+they are sent as an HTTP Basic pair.
+
+Everything below has a working default. Nothing else is required to start.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `WATCHTOWER_SERVICE` | `unknown-service` | tags every trace |
-| `WATCHTOWER_ENV` | `development` | environment |
-| `WATCHTOWER_ENABLED` | `true` | master switch |
-| `WATCHTOWER_MASK_PII` | `true` | redact before persistence |
-| `WATCHTOWER_CAPTURE_CONTENT` | `true` | `false` = metrics-only traces |
-| `WATCHTOWER_SAMPLE_RATE` | `1.0` | fraction of traces kept |
-| `WATCHTOWER_PERSIST_DB` | `false` | enable the local ledger |
-| `WATCHTOWER_PERSIST_ALL_EVENTS` | `false` | persist the whole tree |
-| `WATCHTOWER_GOVERNANCE` | `audit` | `audit` / `warn` / `enforce` |
+| `WATCHER_LANGFUSE_TRANSPORT` | `sdk` | `otlp` for the [agent graph](#agent-graphs) |
+| `WATCHER_SERVICE` | `unknown-service` | tags every trace |
+| `WATCHER_ENV` | `development` | environment |
+| `WATCHER_ENABLED` | `true` | master switch |
+| `WATCHER_MASK_PII` | `true` | redact before persistence |
+| `WATCHER_CAPTURE_CONTENT` | `true` | `false` = metrics-only traces |
+| `WATCHER_SAMPLE_RATE` | `1.0` | fraction of traces kept |
+| `WATCHER_PERSIST_DB` | `false` | enable the local ledger |
+| `WATCHER_PERSIST_ALL_EVENTS` | `false` | persist the whole tree |
+| `WATCHER_GOVERNANCE` | `audit` | `audit` / `warn` / `enforce` |
 | `LANGFUSE_PUBLIC_KEY`<br>`LANGFUSE_SECRET_KEY`<br>`LANGFUSE_HOST` | — | Langfuse |
 
 ---
@@ -503,7 +686,7 @@ which is what removes the duplicates.
 ## Testing
 
 ```bash
-pytest ai_watchtower/tests -q --cov=ai_watchtower --cov-report=term-missing
+pytest shipit_watcher/tests -q --cov=shipit_watcher --cov-report=term-missing
 ```
 
 **148 tests · 90% coverage.**
@@ -518,7 +701,7 @@ Bugs the suite caught during development, rather than assumptions that shipped:
 - `REGON` alternation precedence
 - a double-`yield` in `trace()` that replaced the caller's exception with
   `"generator didn't stop after throw()"`
-- a public `tracer()` helper shadowing the `ai_watchtower.tracer` submodule
+- a public `tracer()` helper shadowing the `shipit_watcher.tracer` submodule
 - typed events not inheriting their parent, flattening the decision path
 
 ---
@@ -527,7 +710,7 @@ Bugs the suite caught during development, rather than assumptions that shipped:
 
 ```python
 # settings.py or AppConfig.ready()
-import ai_watchtower as wt
+import shipit_watcher as wt
 
 wt.configure(
     service_name="fleetflow",

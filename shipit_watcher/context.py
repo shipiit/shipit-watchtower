@@ -21,7 +21,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterator, List, Optional
 
-__all__ = ["TraceContext", "current_context", "bind", "get_trace_id", "get_parent_id"]
+__all__ = ["TraceContext", "current_context", "bind", "use_prompt",
+           "get_trace_id", "get_parent_id"]
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,25 @@ class TraceContext:
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    #: The prompt in force, as ``PromptIdentity.as_metadata()``. Ambient
+    #: rather than per-call so that code calling ``litellm`` directly — deep
+    #: in a tool, in a library, anywhere the identity is not a local variable
+    #: — still records which prompt version produced the answer. Without it
+    #: prompt attribution only works on the call sites you remembered to
+    #: annotate, which is precisely the gap governance cannot have.
+    prompt: Dict[str, Any] = field(default_factory=dict)
+
+    #: Mutable holder for the trace's result. The context itself is frozen so
+    #: nesting cannot corrupt a parent, but the *outcome* is only known at the
+    #: end — so it lives in a one-slot dict the caller can fill:
+    #:     with wt.trace("req") as ctx:
+    #:         ctx.set_output({"answer": text})
+    result: Dict[str, Any] = field(default_factory=dict)
+
+    def set_output(self, value: Any) -> None:
+        """Record the trace's output. Without it Langfuse shows 'undefined'."""
+        self.result["output"] = value
+
     def child(self, parent_id: str) -> "TraceContext":
         """Context for work nested under ``parent_id``."""
         return replace(self, parent_id=parent_id)
@@ -69,7 +89,7 @@ class TraceContext:
 
 
 _context: ContextVar[TraceContext] = ContextVar(
-    "ai_watchtower_context", default=TraceContext()
+    "shipit_watcher_context", default=TraceContext()
 )
 
 
@@ -115,3 +135,24 @@ def bind(**fields: Any) -> Iterator[TraceContext]:
         yield updated
     finally:
         _context.reset(token)
+
+
+@contextmanager
+def use_prompt(prompt: Any) -> Iterator[None]:
+    """Bind a prompt for the enclosing block.
+
+    Every LLM call made inside — through :class:`~shipit_watcher.llm.LLMClient`
+    *or* straight through ``litellm`` with ``instrument_litellm()`` active —
+    records this prompt's name, version and fingerprint::
+
+        prompt = wt.get_prompt("fleet-assistant")
+        with wt.use_prompt(prompt):
+            litellm.completion(model=..., messages=...)   # attributed
+
+    Accepts a ``ManagedPrompt``, a ``PromptIdentity``, or the dict either
+    produces, so callers do not have to know which layer handed it to them.
+    """
+    identity = getattr(prompt, "identity", prompt)
+    payload = identity.as_metadata() if hasattr(identity, "as_metadata") else (identity or {})
+    with bind(prompt=dict(payload)):
+        yield

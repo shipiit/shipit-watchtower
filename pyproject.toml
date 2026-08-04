@@ -3,7 +3,7 @@ requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ai-watchtower"
+name = "shipit-watcher"
 version = "1.0.0"
 description = "Observability for LLM applications — tracing, prompt governance, cost allocation and PII masking."
 readme = "README.md"
@@ -38,7 +38,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["ai_watchtower"]
+packages = ["shipit_watcher"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -48,7 +48,7 @@ addopts = "-q --strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["ai_watchtower"]
+source = ["shipit_watcher"]
 omit = ["*/tests/*"]
 
 [tool.coverage.report]

@@ -12,10 +12,10 @@ import asyncio
 
 import pytest
 
-import ai_watchtower as wt
-from ai_watchtower.config import reset_config
-from ai_watchtower.context import TraceContext, bind, current_context
-from ai_watchtower.events import (
+import shipit_watcher as wt
+from shipit_watcher.config import reset_config
+from shipit_watcher.context import TraceContext, bind, current_context
+from shipit_watcher.events import (
     DecisionEvent,
     Event,
     EventType,
@@ -23,7 +23,7 @@ from ai_watchtower.events import (
     RetrievedChunk,
     Severity,
 )
-from ai_watchtower.tracer import Tracer
+from shipit_watcher.tracer import Tracer
 
 
 class RecordingSink:
@@ -87,7 +87,7 @@ def installed_tracer(tracer):
     exercising them means swapping the module global — and restoring it, or
     one test's tracer leaks into the next.
     """
-    import ai_watchtower.tracer as tmod
+    import shipit_watcher.tracer as tmod
 
     previous = tmod._tracer
     tmod._tracer = tracer
@@ -419,7 +419,7 @@ class TestIdentity:
 class TestConfig:
     def test_env_override(self, monkeypatch):
         reset_config()
-        monkeypatch.setenv("WATCHTOWER_SERVICE", "svc-x")
+        monkeypatch.setenv("WATCHER_SERVICE", "svc-x")
         assert wt.get_config().service_name == "svc-x"
 
     def test_configure_wins(self):

@@ -1,5 +1,5 @@
 """
-AI Watchtower — observability for LLM applications.
+Shipit Watcher — observability for LLM applications.
 
 A single, coherent record of what an AI system did: which prompt ran, what it
 cost, which tenant it belonged to, which tools it called, what it retrieved and
@@ -10,7 +10,7 @@ Quick start
 
 ::
 
-    import ai_watchtower as wt
+    import shipit_watcher as wt
 
     wt.configure(service_name="fleetflow", environment="production")
     wt.instrument_litellm()          # one trace per call, not three
@@ -32,7 +32,7 @@ Design rules
 * Observability never breaks the request it observes. Every entry point
   swallows its own failures.
 * Exactly one component owns tracing. See
-  :mod:`ai_watchtower.instrumentation.litellm`.
+  :mod:`shipit_watcher.instrumentation.litellm`.
 * PII is masked *before* anything is persisted or leaves the process.
 * Context propagates through :mod:`contextvars`, so nothing needs a
   ``trace_id`` parameter threaded through it.
@@ -43,8 +43,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from .config import WatchtowerConfig, configure, get_config, reset_config
-from .context import TraceContext, bind, current_context, get_trace_id
+from .config import WatcherConfig, configure, get_config, reset_config
+from .context import TraceContext, bind, current_context, get_trace_id, use_prompt
 from .events import (
     DecisionEvent,
     Event,
@@ -60,8 +60,13 @@ from .events import (
 )
 from .decorators import observe, observe_agent, observe_tool
 from .identity import PromptIdentity, fingerprint_text, identify_prompt
+from .llm import run_prompt as run_prompt
+from .llm import GovernanceError, LLMClient, LLMResponse, complete, stream
 from .masking import MaskingPolicy, Redactor, mask_payload, mask_text
-from .prompts import ManagedPrompt, PromptRegistry, get_prompt, get_registry
+from .prompts import (
+    ManagedPrompt, PromptRegistry, agent_prompt_name, create_prompt,
+    get_agent_prompt, get_prompt, get_registry,
+)
 from .scoring import (
     Evaluator,
     JUDGE_RUBRICS,
@@ -73,14 +78,18 @@ from .scoring import (
     record_score,
     score,
 )
+from .tracer import (
+    decision as decision, generation as generation, handoff as handoff,
+    policy as policy, retrieval as retrieval, span as span, tool as tool,
+)
 from .tracer import Tracer, get_tracer
 
 __version__ = "1.0.0"
 
 
 # NOTE: there is deliberately no module-level ``tracer()`` helper. Defining one
-# would shadow the ``ai_watchtower.tracer`` submodule, so
-# ``import ai_watchtower.tracer`` would bind a function instead of the module.
+# would shadow the ``shipit_watcher.tracer`` submodule, so
+# ``import shipit_watcher.tracer`` would bind a function instead of the module.
 # ``get_tracer()`` is the single, unambiguous accessor.
 
 
@@ -111,11 +120,12 @@ def flush() -> None:
 __all__ = [
     "__version__",
     # configuration
-    "WatchtowerConfig", "configure", "get_config", "reset_config",
+    "WatcherConfig", "configure", "get_config", "reset_config",
     # context
-    "TraceContext", "bind", "current_context", "get_trace_id",
+    "TraceContext", "bind", "use_prompt", "current_context", "get_trace_id",
     # tracing
     "Tracer", "get_tracer", "trace", "flush",
+    "span", "tool", "generation", "retrieval", "decision", "handoff", "policy",
     # decorators
     "observe", "observe_tool", "observe_agent",
     # events
@@ -126,8 +136,11 @@ __all__ = [
     "PromptIdentity", "identify_prompt", "fingerprint_text",
     # privacy
     "MaskingPolicy", "Redactor", "mask_text", "mask_payload",
+    # LLM gateway
+    "LLMClient", "LLMResponse", "GovernanceError", "complete", "stream", "run_prompt",
     # prompt registry
-    "ManagedPrompt", "PromptRegistry", "get_prompt", "get_registry",
+    "ManagedPrompt", "PromptRegistry", "get_prompt", "create_prompt",
+    "get_agent_prompt", "agent_prompt_name", "get_registry",
     # scoring & evaluation
     "Score", "ScoreSource", "ScoreDataType", "score", "record_score",
     "Evaluator", "LLMJudge", "JUDGE_RUBRICS", "evaluate",

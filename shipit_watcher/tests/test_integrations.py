@@ -18,11 +18,11 @@ import types
 
 import pytest
 
-import ai_watchtower as wt
-from ai_watchtower.config import reset_config
-from ai_watchtower.context import TraceContext
-from ai_watchtower.events import Event, EventType, GenerationEvent, Severity
-from ai_watchtower.sinks.base import ConsoleSink, FanOutSink
+import shipit_watcher as wt
+from shipit_watcher.config import reset_config
+from shipit_watcher.context import TraceContext
+from shipit_watcher.events import Event, EventType, GenerationEvent, Severity
+from shipit_watcher.sinks.base import ConsoleSink, FanOutSink
 
 
 @pytest.fixture(autouse=True)
@@ -116,13 +116,13 @@ class _FakeLangfuseClient:
 
 class TestLangfuseSink:
     def _sink(self):
-        from ai_watchtower.sinks.langfuse_sink import LangfuseSink
+        from shipit_watcher.sinks.langfuse_sink import LangfuseSink
 
         client = _FakeLangfuseClient()
         return LangfuseSink(client=client), client
 
     def test_unavailable_without_client(self):
-        from ai_watchtower.sinks.langfuse_sink import LangfuseSink
+        from shipit_watcher.sinks.langfuse_sink import LangfuseSink
 
         sink = LangfuseSink(client=None)
         # Nothing should raise even though there is no backend.
@@ -203,7 +203,7 @@ class TestLangfuseSink:
         assert client.flushed == 1
 
     def test_backend_exception_absorbed(self):
-        from ai_watchtower.sinks.langfuse_sink import LangfuseSink
+        from shipit_watcher.sinks.langfuse_sink import LangfuseSink
 
         class Boom:
             def trace(self, **kw): raise RuntimeError("down")
@@ -226,7 +226,7 @@ def fake_litellm(monkeypatch):
     module.completion_cost = lambda **kw: 0.005
     monkeypatch.setitem(sys.modules, "litellm", module)
 
-    from ai_watchtower.instrumentation import litellm as inst
+    from shipit_watcher.instrumentation import litellm as inst
 
     inst._instrumented = False
     inst._saved_callbacks.clear()
@@ -237,51 +237,51 @@ def fake_litellm(monkeypatch):
 class TestLiteLLMInstrumentation:
     def test_removes_langfuse_callback(self, fake_litellm):
         """The duplicate-trace fix, pinned."""
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         assert inst.instrument() is True
         assert "langfuse" not in fake_litellm.success_callback
         assert "langfuse" not in fake_litellm.failure_callback
 
     def test_installs_handler(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         inst.instrument()
-        assert any(isinstance(c, inst.WatchtowerLiteLLMHandler)
+        assert any(isinstance(c, inst.WatcherLiteLLMHandler)
                    for c in fake_litellm.callbacks)
 
     def test_idempotent(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         inst.instrument()
         inst.instrument()
         handlers = [c for c in fake_litellm.callbacks
-                    if isinstance(c, inst.WatchtowerLiteLLMHandler)]
+                    if isinstance(c, inst.WatcherLiteLLMHandler)]
         assert len(handlers) == 1
 
     def test_can_keep_native_callback(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         inst.instrument(replace_langfuse_callback=False)
         assert "langfuse" in fake_litellm.success_callback
 
     def test_uninstrument_restores(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         inst.instrument()
         inst.uninstrument()
         assert fake_litellm.success_callback == ["langfuse"]
-        assert not any(isinstance(c, inst.WatchtowerLiteLLMHandler)
+        assert not any(isinstance(c, inst.WatcherLiteLLMHandler)
                        for c in fake_litellm.callbacks)
         assert inst.is_instrumented() is False
 
     def test_uninstrument_without_instrument_is_noop(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         inst.uninstrument()  # must not raise
 
     def test_missing_litellm_returns_false(self, monkeypatch):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         inst._instrumented = False
         monkeypatch.setitem(sys.modules, "litellm", None)
@@ -296,9 +296,9 @@ class TestLiteLLMInstrumentation:
         assert inst.instrument() is False
 
     def test_handler_records_into_ambient_trace(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
-        from ai_watchtower.tracer import Tracer
-        import ai_watchtower.tracer as tmod
+        from shipit_watcher.instrumentation import litellm as inst
+        from shipit_watcher.tracer import Tracer
+        import shipit_watcher.tracer as tmod
 
         captured = []
 
@@ -311,7 +311,7 @@ class TestLiteLLMInstrumentation:
         tracer = Tracer(sinks=[Sink()])
         previous, tmod._tracer = tmod._tracer, tracer
         try:
-            handler = inst.WatchtowerLiteLLMHandler()
+            handler = inst.WatcherLiteLLMHandler()
             response = types.SimpleNamespace(
                 usage={"prompt_tokens": 10, "completion_tokens": 20}
             )
@@ -327,11 +327,14 @@ class TestLiteLLMInstrumentation:
         assert captured[0].model == "gpt-4o"
         assert captured[0].total_tokens == 30
 
-    def test_handler_drops_calls_outside_a_trace(self, fake_litellm):
-        """No ambient trace means no orphan entry — the noise being replaced."""
-        from ai_watchtower.instrumentation import litellm as inst
-        from ai_watchtower.tracer import Tracer
-        import ai_watchtower.tracer as tmod
+    def test_call_outside_a_trace_gets_its_own_named_trace(self, fake_litellm):
+        """Background work — reindexing, a nightly report — has no ambient
+        trace. Dropping it made instrumentation *lose* work; it gets a trace
+        of its own instead, named `rag.embedding` rather than
+        `litellm-aembedding`."""
+        from shipit_watcher.instrumentation import litellm as inst
+        from shipit_watcher.tracer import Tracer
+        import shipit_watcher.tracer as tmod
 
         captured = []
 
@@ -343,17 +346,35 @@ class TestLiteLLMInstrumentation:
 
         previous, tmod._tracer = tmod._tracer, Tracer(sinks=[Sink()])
         try:
-            inst.WatchtowerLiteLLMHandler().log_success_event(
-                {"model": "gpt-4o"}, types.SimpleNamespace(usage={}), 1.0, 2.0
+            inst.WatcherLiteLLMHandler().log_success_event(
+                {"model": "text-embedding-3-small", "call_type": "aembedding"},
+                types.SimpleNamespace(usage={}), 1.0, 2.0,
             )
         finally:
             tmod._tracer = previous
-        assert captured == []
+        assert [e.name for e in captured] == ["rag.embedding"]
+
+    def test_call_type_names_the_operation(self):
+        """The whole point: `litellm-aembedding` says how the bytes travelled,
+        `rag.embedding` says what the system was doing."""
+        from shipit_watcher.instrumentation.litellm import _call_name
+
+        assert _call_name({"call_type": "aembedding"}) == "rag.embedding"
+        assert _call_name({"call_type": "acompletion"}) == "llm.completion"
+        assert _call_name({}) == "llm.completion"
+
+    def test_explicit_generation_name_wins(self):
+        from shipit_watcher.instrumentation.litellm import _call_name
+
+        assert _call_name({
+            "call_type": "aembedding",
+            "metadata": {"generation_name": "rag.tickets"},
+        }) == "rag.tickets"
 
     def test_handler_records_failures(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
-        from ai_watchtower.tracer import Tracer
-        import ai_watchtower.tracer as tmod
+        from shipit_watcher.instrumentation import litellm as inst
+        from shipit_watcher.tracer import Tracer
+        import shipit_watcher.tracer as tmod
 
         captured = []
 
@@ -367,7 +388,7 @@ class TestLiteLLMInstrumentation:
         previous, tmod._tracer = tmod._tracer, tracer
         try:
             with tracer.trace("req"):
-                inst.WatchtowerLiteLLMHandler().log_failure_event(
+                inst.WatcherLiteLLMHandler().log_failure_event(
                     {"model": "gpt-4o", "exception": ValueError("rate limit")},
                     None, 1.0, 2.0,
                 )
@@ -377,13 +398,13 @@ class TestLiteLLMInstrumentation:
         assert "rate limit" in captured[0].status_message
 
     def test_handler_never_raises(self, fake_litellm):
-        from ai_watchtower.instrumentation import litellm as inst
+        from shipit_watcher.instrumentation import litellm as inst
 
         # Garbage in every position — the handler must absorb it.
-        inst.WatchtowerLiteLLMHandler().log_success_event(None, None, None, None)
+        inst.WatcherLiteLLMHandler().log_success_event(None, None, None, None)
 
     def test_usage_from_object_shape(self, fake_litellm):
-        from ai_watchtower.instrumentation.litellm import _usage_from
+        from shipit_watcher.instrumentation.litellm import _usage_from
 
         response = types.SimpleNamespace(
             usage=types.SimpleNamespace(prompt_tokens=5, completion_tokens=6)
@@ -391,6 +412,81 @@ class TestLiteLLMInstrumentation:
         assert _usage_from(response) == (5, 6)
 
     def test_cost_falls_back_to_completion_cost(self, fake_litellm):
-        from ai_watchtower.instrumentation.litellm import _cost_from
+        from shipit_watcher.instrumentation.litellm import _cost_from
 
         assert _cost_from({}, types.SimpleNamespace()) == 0.005
+
+
+class TestAmbientPrompt:
+    """`wt.use_prompt(...)` attributes calls that cannot pass metadata."""
+
+    def test_ambient_prompt_reaches_a_generation(self):
+        import shipit_watcher as wt
+        from shipit_watcher.tracer import Tracer
+        import shipit_watcher.tracer as tmod
+
+        class Collector:
+            def __init__(self): self.events = []
+            def start_trace(self, *a, **k): pass
+            def end_trace(self, *a, **k): pass
+            def record(self, event, ctx): self.events.append(event)
+            def flush(self): pass
+
+        sink = Collector()
+        previous, tmod._tracer = tmod._tracer, Tracer(sinks=[sink])
+        try:
+            identity = wt.identify_prompt("You are a fleet assistant.",
+                                          name="fleet-assistant", version="2",
+                                          registered=True)
+            with tmod._tracer.trace("turn"):
+                with wt.use_prompt(identity):
+                    with tmod._tracer.generation("llm.x", model="m"):
+                        pass
+        finally:
+            tmod._tracer = previous
+
+        assert sink.events[0].prompt["prompt_name"] == "fleet-assistant"
+        assert sink.events[0].prompt["prompt_version"] == "2"
+
+    def test_explicit_prompt_wins_over_ambient(self):
+        import shipit_watcher as wt
+        from shipit_watcher.tracer import Tracer
+        import shipit_watcher.tracer as tmod
+
+        class Collector:
+            def __init__(self): self.events = []
+            def start_trace(self, *a, **k): pass
+            def end_trace(self, *a, **k): pass
+            def record(self, event, ctx): self.events.append(event)
+            def flush(self): pass
+
+        sink = Collector()
+        previous, tmod._tracer = tmod._tracer, Tracer(sinks=[sink])
+        try:
+            ambient = wt.identify_prompt("a", name="ambient")
+            explicit = wt.identify_prompt("b", name="explicit")
+            with tmod._tracer.trace("turn"):
+                with wt.use_prompt(ambient):
+                    with tmod._tracer.generation("llm.x", model="m", prompt=explicit):
+                        pass
+        finally:
+            tmod._tracer = previous
+
+        assert sink.events[0].prompt["prompt_name"] == "explicit"
+
+    def test_binding_does_not_leak_past_the_block(self):
+        import shipit_watcher as wt
+        from shipit_watcher.context import current_context
+
+        with wt.use_prompt(wt.identify_prompt("x", name="p")):
+            assert current_context().prompt
+        assert not current_context().prompt
+
+    def test_accepts_a_managed_prompt(self):
+        import shipit_watcher as wt
+        from shipit_watcher.context import current_context
+        from shipit_watcher.prompts import ManagedPrompt
+
+        managed = ManagedPrompt(name="fleet-assistant", template="hi", version="3")
+        with wt.use_prompt(managed):
+            assert current_context().prompt["prompt_name"] == "fleet-assistant"

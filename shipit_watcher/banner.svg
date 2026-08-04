@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="Shipit Watcher — observability for LLM applications">
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#0B1220"/>
+      <stop offset="55%" stop-color="#111B2E"/>
+      <stop offset="100%" stop-color="#0A1526"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#37E5B6" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#37E5B6" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#F2F6FB"/>
+      <stop offset="100%" stop-color="#9FD9FF"/>
+    </linearGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#ground)"/>
+
+  <!-- Faint grid: the dashboard the library feeds. -->
+  <g stroke="#2B3B55" stroke-width="1" opacity="0.35">
+    <path d="M0 60H1200M0 120H1200M0 180H1200M0 240H1200"/>
+    <path d="M120 0V300M240 0V300M360 0V300M480 0V300M600 0V300M720 0V300M840 0V300M960 0V300M1080 0V300"/>
+  </g>
+
+  <!-- The sweep: what a watcher does. -->
+  <path d="M150 150 L560 58 L560 242 Z" fill="url(#beam)" filter="url(#soft)"/>
+
+  <!-- Mark: a lens over a trace tree — one root, its children observed. -->
+  <g transform="translate(72,150)">
+    <circle r="52" fill="none" stroke="#37E5B6" stroke-width="3" opacity="0.9"/>
+    <circle r="52" fill="#37E5B6" opacity="0.06"/>
+    <circle cy="-26" r="7"  fill="#37E5B6"/>
+    <path d="M0 -19 V4 M0 4 H-22 V22 M0 4 H22 V22"
+          fill="none" stroke="#9FD9FF" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="-22" cy="28" r="6" fill="#9FD9FF"/>
+    <circle cx="22"  cy="28" r="6" fill="#9FD9FF"/>
+  </g>
+
+  <text x="168" y="140" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+        font-size="62" font-weight="700" fill="url(#wordmark)" letter-spacing="-1.5">
+    shipit-watcher
+  </text>
+  <text x="172" y="182" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+        font-size="21" fill="#7FA0C4" letter-spacing="0.5">
+    observability for LLM applications
+  </text>
+
+  <!-- What one trace actually contains, in the library's own vocabulary. -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">
+    <g transform="translate(172,222)">
+      <rect width="86" height="28" rx="6" fill="#12283F" stroke="#2F5C7E"/>
+      <text x="43" y="19" fill="#37E5B6" text-anchor="middle">agent</text>
+    </g>
+    <g transform="translate(268,222)">
+      <rect width="76" height="28" rx="6" fill="#12283F" stroke="#2F5C7E"/>
+      <text x="38" y="19" fill="#9FD9FF" text-anchor="middle">tool</text>
+    </g>
+    <g transform="translate(354,222)">
+      <rect width="116" height="28" rx="6" fill="#12283F" stroke="#2F5C7E"/>
+      <text x="58" y="19" fill="#9FD9FF" text-anchor="middle">retriever</text>
+    </g>
+    <g transform="translate(480,222)">
+      <rect width="130" height="28" rx="6" fill="#12283F" stroke="#2F5C7E"/>
+      <text x="65" y="19" fill="#9FD9FF" text-anchor="middle">generation</text>
+    </g>
+    <g transform="translate(620,222)">
+      <rect width="118" height="28" rx="6" fill="#12283F" stroke="#2F5C7E"/>
+      <text x="59" y="19" fill="#FFC978" text-anchor="middle">guardrail</text>
+    </g>
+  </g>
+
+  <!-- The numbers a trace carries, right-aligned like a ledger. -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" fill="#5F7FA6">
+    <text x="1140" y="108" text-anchor="end">prompt version · pinned</text>
+    <text x="1140" y="140" text-anchor="end">tokens · 467 → 121</text>
+    <text x="1140" y="172" text-anchor="end">cost · $0.000400</text>
+    <text x="1140" y="204" text-anchor="end">PII · masked before write</text>
+  </g>
+</svg>

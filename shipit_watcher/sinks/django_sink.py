@@ -28,6 +28,25 @@ logger = logging.getLogger(__name__)
 __all__ = ["DjangoSink"]
 
 
+
+def _as_pk(value):
+    """Return *value* if it can be a UUID primary key, else None.
+
+    Watcher deliberately accepts any string as a user or company id — an
+    email, an SSO subject, a tenant slug. Django's UUID FK does not, and it
+    rejects the *entire row* rather than the field, so an email-keyed trace
+    used to vanish from the ledger with only a warning in the log.
+    """
+    if not value:
+        return None
+    try:
+        import uuid
+
+        uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return value
+
 class DjangoSink:
     """Persists generations to the host application's database."""
 
@@ -47,7 +66,7 @@ class DjangoSink:
                 self._write(event, context)
             except Exception:
                 # A failed write is a monitoring gap, never a failed request.
-                logger.warning("watchtower: could not persist LLM call", exc_info=True)
+                logger.warning("watcher: could not persist LLM call", exc_info=True)
 
         # Optionally persist the whole tree so the decision path is
         # reconstructable locally, not only in the hosted UI.
@@ -55,7 +74,7 @@ class DjangoSink:
             try:
                 self._write_event(event, context)
             except Exception:
-                logger.warning("watchtower: could not persist trace event", exc_info=True)
+                logger.warning("watcher: could not persist trace event", exc_info=True)
 
     def _write_event(self, event: Event, context: TraceContext) -> None:
         """Persist one event as a node in the trace tree."""
@@ -106,7 +125,7 @@ class DjangoSink:
         )
 
     def _write(self, event: Event, context: TraceContext) -> None:
-        from agent.models.llm_call import LLMCallRecord  # host-app model
+        from agent.models.llm_call import LLMCallRecord
 
         config = get_config()
         prompt = getattr(event, "prompt", {}) or {}
@@ -118,8 +137,12 @@ class DjangoSink:
             metadata.setdefault("duration_ms", event.duration_ms)
 
         LLMCallRecord.objects.create(
-            company_id=context.company_id or None,
-            user_id=context.user_id or None,
+            company_id=_as_pk(context.company_id),
+            # The FK only when the value is a primary key; the raw identifier
+            # always. Tracing by email is legitimate — and used — so it must
+            # not cost the whole row.
+            user_id=_as_pk(context.user_id),
+            user_ref=str(context.user_id or "")[:255],
             session_id=str(context.session_id or "")[:64],
             trace_id=str(context.trace_id or "")[:64],
             observation_id=str(event.id or "")[:64],
