@@ -206,6 +206,58 @@ def _restore_context(payload: Any) -> Optional[TraceContext]:
 _PROXY_TRACE_KEYS = ("existing_trace_id", "generation_name", "session_id",
                      "trace_user_id")
 
+#: Prompt identity travels under the names the registry already uses, so a
+#: gateway enforcing prompt governance needs no translation table.
+_PROMPT_KEYS = ("prompt_name", "prompt_version", "prompt_fingerprint",
+                "prompt_registered")
+
+
+def _governance_payload(context: TraceContext) -> Dict[str, Any]:
+    """Attribution and prompt identity under the gateway's wire names.
+
+    Everything comes from the ambient context or the configuration, never from
+    a lookup: a cost centre resolved after the fact may since have changed, and
+    an attribution that is only *usually* right is not one you can bill from.
+    """
+    from ..config import get_config
+
+    config = get_config()
+    if not getattr(config, "gateway_attribution", False):
+        return {}
+
+    sources = {
+        "service_name": config.service_name,
+        "environment": config.environment,
+        "cost_center": context.cost_center,
+        "company_id": context.company_id,
+        "user_id": context.user_id,
+        "session_id": context.session_id,
+        "channel": context.channel,
+    }
+
+    payload: Dict[str, Any] = {}
+    for wire_name, source_name in (getattr(config, "gateway_key_map", None) or {}).items():
+        value = sources.get(source_name)
+        if value not in (None, ""):
+            payload[str(wire_name)] = str(value)
+
+    # Prompt identity is forwarded verbatim. A gateway in enforce mode decides
+    # on `prompt_name`/`prompt_version`; renaming them would defeat it.
+    prompt = context.prompt or {}
+    for key in _PROMPT_KEYS:
+        value = prompt.get(key)
+        if value not in (None, ""):
+            payload[key] = value if key == "prompt_registered" else str(value)
+    return payload
+
+
+def _generation_owner() -> str:
+    """``app`` (this SDK writes generations) or ``gateway`` (the proxy does)."""
+    from ..config import get_config
+
+    value = str(getattr(get_config(), "generation_owner", "app") or "app").strip().lower()
+    return "gateway" if value == "gateway" else "app"
+
 
 def _stamp(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Attach the calling thread's context to this request's metadata.
@@ -243,6 +295,13 @@ def _stamp(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     for key in _PROXY_TRACE_KEYS:
         if key in metadata:
             forwarded.setdefault(key, metadata[key])
+
+    # Attribution and prompt identity ride the same envelope. A gateway that
+    # allocates cost or enforces prompt governance reads them here; one that
+    # does not simply ignores unknown keys.
+    for key, value in _governance_payload(context).items():
+        forwarded.setdefault(key, value)
+
     if forwarded:
         extra_body["metadata"] = forwarded
         kwargs["extra_body"] = extra_body
@@ -315,6 +374,15 @@ class WatcherLiteLLMHandler:
             kwargs = kwargs if isinstance(kwargs, dict) else {}
             context = _context_from(kwargs)
             tracer = get_tracer()
+
+            # When the proxy owns the generation record, stay out of its way:
+            # it logs server-side into the same trace (we hand it
+            # `existing_trace_id`), so emitting here would duplicate the call —
+            # the very thing this module prevents, one layer further out.
+            # Failures are still worth recording: a gateway that rejected the
+            # request never logged a generation for it.
+            if _generation_owner() == "gateway" and error is None:
+                return
 
             prompt_tokens, completion_tokens = _usage_from(response_obj)
             model = str(kwargs.get("model", "") or "")
