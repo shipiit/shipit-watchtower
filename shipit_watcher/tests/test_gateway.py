@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-import shipit_watcher as wt
 from shipit_watcher.config import configure, reset_config
 from shipit_watcher.context import TraceContext, bind
 from shipit_watcher.instrumentation.litellm import (

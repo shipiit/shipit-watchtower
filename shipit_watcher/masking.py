@@ -24,15 +24,17 @@ traces exist to explain.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Pattern, Sequence
+from re import Pattern
+from typing import Any
 
 __all__ = [
     "MaskingPolicy",
     "Redactor",
     "default_redactor",
-    "mask_text",
     "mask_payload",
+    "mask_text",
 ]
 
 # Recursion / size guards. Trace payloads are attacker-influenceable (an email
@@ -60,7 +62,7 @@ def _pesel_ok(digits: str) -> bool:
     if len(digits) != 11:
         return False
     weights = (1, 3, 7, 9, 1, 3, 7, 9, 1, 3)
-    total = sum(int(d) * w for d, w in zip(digits[:10], weights))
+    total = sum(int(d) * w for d, w in zip(digits[:10], weights, strict=False))
     return (10 - total % 10) % 10 == int(digits[10])
 
 
@@ -69,7 +71,7 @@ def _nip_ok(digits: str) -> bool:
     if len(digits) != 10:
         return False
     weights = (6, 5, 7, 2, 3, 4, 5, 6, 7)
-    total = sum(int(d) * w for d, w in zip(digits[:9], weights))
+    total = sum(int(d) * w for d, w in zip(digits[:9], weights, strict=False))
     check = total % 11
     return check != 10 and check == int(digits[9])
 
@@ -77,7 +79,7 @@ def _nip_ok(digits: str) -> bool:
 def _regon_ok(digits: str) -> bool:
     """REGON checksum — 9-digit and 14-digit variants."""
     def _check(body: str, weights: Sequence[int]) -> bool:
-        total = sum(int(d) * w for d, w in zip(body, weights))
+        total = sum(int(d) * w for d, w in zip(body, weights, strict=False))
         return total % 11 % 10 == int(body[len(weights)])
 
     if len(digits) == 9:
@@ -115,7 +117,7 @@ class _Rule:
     def redact(self, text: str, placeholder: Callable[[str], str]) -> tuple[str, int]:
         hits = 0
 
-        def _replace(match: "re.Match[str]") -> str:
+        def _replace(match: re.Match[str]) -> str:
             nonlocal hits
             raw = match.group(self.group)
             if self.validator is not None:
@@ -253,7 +255,7 @@ class Redactor:
             return self.text(value)
 
         if isinstance(value, Mapping):
-            masked: Dict[str, Any] = {}
+            masked: dict[str, Any] = {}
             for index, (key, item) in enumerate(value.items()):
                 if index >= _MAX_ITEMS:
                     masked["…"] = "[TRUNCATED]"
@@ -268,7 +270,7 @@ class Redactor:
             return masked
 
         if isinstance(value, (list, tuple, set)):
-            items: List[Any] = []
+            items: list[Any] = []
             for index, item in enumerate(value):
                 if index >= _MAX_ITEMS:
                     items.append("[TRUNCATED]")

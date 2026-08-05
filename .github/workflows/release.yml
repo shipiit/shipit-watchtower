@@ -1,15 +1,16 @@
-# Publikacja na PyPI.
+# Publishing to PyPI.
 #
-# Wydanie jest wyzwalane tagiem `vX.Y.Z` i nie może się odbyć bez zielonych
-# testów — publikacja to jedyna operacja tutaj, której nie da się cofnąć:
-# numeru wersji na PyPI nie wolno nadpisać, nawet po usunięciu pliku.
-# Dlatego build i testy są osobnym jobem, a publikacja zależy od nich.
+# A release is triggered by a `vX.Y.Z` tag and cannot happen without green
+# tests, because publication is the one operation here that cannot be undone:
+# a version number on PyPI must never be reused, even after the file is
+# deleted. So the build and the tests are their own job, and publishing
+# depends on them.
 #
-# Uwierzytelnianie: Trusted Publishing (OIDC), bez tokenu w sekretach.
-# Konfiguracja jednorazowa na PyPI: Project → Publishing → Add a new publisher
+# Authentication is Trusted Publishing (OIDC) — no token in secrets. One-time
+# setup on PyPI: Project → Publishing → Add a new publisher
 #   owner: shipiit, repo: shipit-watchtower, workflow: release.yml
-# Do czasu jej włączenia zadziała wariant z sekretem PYPI_API_TOKEN — patrz
-# zakomentowany blok na końcu.
+# Until that is enabled, the PYPI_API_TOKEN variant works instead — see the
+# commented block at the end.
 
 name: release
 
@@ -19,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Zbuduj i sprawdź, ale nie publikuj"
+        description: "Build and check, but do not publish"
         type: boolean
         default: true
 
@@ -49,18 +50,18 @@ jobs:
           python-version: "3.12"
       - run: pip install build twine
       - run: python -m build
-      # `twine check` łapie zepsuty README zanim trafi na stronę pakietu —
-      # tego akurat nie da się poprawić bez wydania nowej wersji.
+      # `twine check` catches a broken README before it reaches the package
+      # page — the one thing that cannot be corrected without a new release.
       - run: twine check dist/*
-      # Tag musi zgadzać się z wersją w pyproject. Rozjazd oznacza wydanie
-      # pod numerem, którego nikt nie zamierzał wydać.
-      - name: Zgodność tagu z wersją pakietu
+      # The tag has to match the version in pyproject. A mismatch means
+      # releasing under a number nobody intended to release.
+      - name: Tag matches the package version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "tag=$TAG pyproject=$PKG"
-          test "$TAG" = "$PKG" || { echo "::error::tag $TAG != wersja $PKG"; exit 1; }
+          test "$TAG" = "$PKG" || { echo "::error::tag $TAG != version $PKG"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -80,7 +81,7 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
-      # Wariant zapasowy, gdyby Trusted Publishing nie był jeszcze włączony:
+      # Fallback, if Trusted Publishing is not enabled yet:
       # - uses: pypa/gh-action-pypi-publish@release/v1
       #   with:
       #     password: ${{ secrets.PYPI_API_TOKEN }}

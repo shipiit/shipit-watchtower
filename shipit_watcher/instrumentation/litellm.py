@@ -27,7 +27,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ..context import TraceContext, current_context
 from ..events import GenerationEvent, Severity
@@ -35,10 +35,10 @@ from ..tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["instrument", "uninstrument", "is_instrumented"]
+__all__ = ["instrument", "is_instrumented", "uninstrument"]
 
 _instrumented = False
-_saved_callbacks: Dict[str, Any] = {}
+_saved_callbacks: dict[str, Any] = {}
 
 
 def _usage_from(response: Any) -> tuple[int, int]:
@@ -54,7 +54,7 @@ def _usage_from(response: Any) -> tuple[int, int]:
     )
 
 
-def _cost_from(kwargs: Dict[str, Any], response: Any) -> float:
+def _cost_from(kwargs: dict[str, Any], response: Any) -> float:
     """Best-effort cost. LiteLLM reports it in several places by version.
 
     ``_hidden_params["response_cost"]`` is checked first and matters most:
@@ -82,7 +82,7 @@ def _cost_from(kwargs: Dict[str, Any], response: Any) -> float:
     return _computed_cost(kwargs, response)
 
 
-def _computed_cost(kwargs: Dict[str, Any], response: Any) -> float:
+def _computed_cost(kwargs: dict[str, Any], response: Any) -> float:
     """Price the call ourselves when nobody reported a figure.
 
     Streaming calls through a gateway routinely arrive with every cost field
@@ -138,7 +138,7 @@ _CALL_NAMES = {
 }
 
 
-def _call_name(kwargs: Dict[str, Any]) -> str:
+def _call_name(kwargs: dict[str, Any]) -> str:
     """What to call this call.
 
     An explicit `metadata["generation_name"]` wins — a caller that named the
@@ -171,10 +171,10 @@ _CONTEXT_KEY = "_watcher_context"
 _WRAPPED_FUNCTIONS = ("completion", "acompletion", "embedding", "aembedding",
                       "text_completion", "atext_completion")
 
-_originals: Dict[str, Any] = {}
+_originals: dict[str, Any] = {}
 
 
-def _snapshot_context() -> Dict[str, Any]:
+def _snapshot_context() -> dict[str, Any]:
     """The ambient context as a plain dict, safe to hand to another thread."""
     context = current_context()
     return {
@@ -191,7 +191,7 @@ def _snapshot_context() -> Dict[str, Any]:
     }
 
 
-def _restore_context(payload: Any) -> Optional[TraceContext]:
+def _restore_context(payload: Any) -> TraceContext | None:
     if not isinstance(payload, dict) or not payload.get("trace_id"):
         return None
     fields = TraceContext.__dataclass_fields__
@@ -212,7 +212,7 @@ _PROMPT_KEYS = ("prompt_name", "prompt_version", "prompt_fingerprint",
                 "prompt_registered")
 
 
-def _governance_payload(context: TraceContext) -> Dict[str, Any]:
+def _governance_payload(context: TraceContext) -> dict[str, Any]:
     """Attribution and prompt identity under the gateway's wire names.
 
     Everything comes from the ambient context or the configuration, never from
@@ -235,7 +235,7 @@ def _governance_payload(context: TraceContext) -> Dict[str, Any]:
         "channel": context.channel,
     }
 
-    payload: Dict[str, Any] = {}
+    payload: dict[str, Any] = {}
     for wire_name, source_name in (getattr(config, "gateway_key_map", None) or {}).items():
         value = sources.get(source_name)
         if value not in (None, ""):
@@ -259,7 +259,7 @@ def _generation_owner() -> str:
     return "gateway" if value == "gateway" else "app"
 
 
-def _stamp(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _stamp(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Attach the calling thread's context to this request's metadata.
 
     Two audiences, one envelope. ``_CONTEXT_KEY`` is for our own callback,
@@ -329,7 +329,7 @@ def _wrap(func):
     return wrapper
 
 
-def _context_from(kwargs: Dict[str, Any]) -> TraceContext:
+def _context_from(kwargs: dict[str, Any]) -> TraceContext:
     """The context this call was made in — stamped, or ambient as a fallback.
 
     Ambient is checked second rather than first: on the non-streaming path the
@@ -429,7 +429,7 @@ class WatcherLiteLLMHandler:
                 event.severity = Severity.ERROR
                 event.status_message = str(error)[:500]
 
-            tracer._emit(event, context)  # noqa: SLF001 — internal by design
+            tracer._emit(event, context)
         except Exception:
             logger.warning("watcher: litellm handler failed", exc_info=True)
 
@@ -455,7 +455,7 @@ class WatcherLiteLLMHandler:
             if error is not None:
                 event.severity = Severity.ERROR
                 event.status_message = str(error)[:500]
-            tracer._emit(event, context)  # noqa: SLF001
+            tracer._emit(event, context)
 
 
 
@@ -481,7 +481,7 @@ def _handler_class():
     return _Handler
 
 
-def _as_epoch(value: Any) -> Optional[float]:
+def _as_epoch(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, (int, float)):

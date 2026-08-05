@@ -17,14 +17,15 @@ Two rules every sink must honour:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Protocol, runtime_checkable
+from collections.abc import Iterable
+from typing import Any, Protocol, runtime_checkable
 
 from ..context import TraceContext
 from ..events import Event
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Sink", "FanOutSink", "ConsoleSink"]
+__all__ = ["ConsoleSink", "FanOutSink", "Sink"]
 
 
 @runtime_checkable
@@ -36,7 +37,7 @@ class Sink(Protocol):
         ...
 
     def end_trace(self, trace_id: str, output: Any = None,
-                  metadata: Optional[Dict[str, Any]] = None) -> None:
+                  metadata: dict[str, Any] | None = None) -> None:
         ...
 
     def record(self, event: Event, context: TraceContext) -> None:
@@ -57,7 +58,7 @@ class FanOutSink:
     """
 
     def __init__(self, sinks: Iterable[Sink]):
-        self._sinks: List[Sink] = [s for s in sinks if s is not None]
+        self._sinks: list[Sink] = [s for s in sinks if s is not None]
 
     def __bool__(self) -> bool:
         return bool(self._sinks)
@@ -77,7 +78,7 @@ class FanOutSink:
         self._each("start_trace", trace_id, name, context, input_data)
 
     def end_trace(self, trace_id: str, output: Any = None,
-                  metadata: Optional[Dict[str, Any]] = None) -> None:
+                  metadata: dict[str, Any] | None = None) -> None:
         self._each("end_trace", trace_id, output, metadata)
 
     def record(self, event: Event, context: TraceContext) -> None:
@@ -103,7 +104,7 @@ class ConsoleSink:
                        context.company_id or "-")
 
     def end_trace(self, trace_id: str, output: Any = None,
-                  metadata: Optional[Dict[str, Any]] = None) -> None:
+                  metadata: dict[str, Any] | None = None) -> None:
         self._log.info("└ trace %s complete", trace_id[:8])
 
     def record(self, event: Event, context: TraceContext) -> None:

@@ -40,11 +40,23 @@ Design rules
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from .config import WatcherConfig, configure, get_config, reset_config
 from .context import TraceContext, bind, current_context, get_trace_id, use_prompt
+from .datasets import (
+    DatasetItem,
+    ExperimentResult,
+    add_item,
+    agent_dataset_name,
+    capture,
+    create_dataset,
+    get_items,
+    run_experiment,
+)
+from .decorators import observe, observe_agent, observe_tool
 from .events import (
     DecisionEvent,
     Event,
@@ -58,22 +70,22 @@ from .events import (
     Severity,
     ToolInvocationEvent,
 )
-from .datasets import (
-    DatasetItem, ExperimentResult, add_item, agent_dataset_name, capture,
-    create_dataset, get_items, run_experiment,
-)
-from .decorators import observe, observe_agent, observe_tool
 from .identity import PromptIdentity, fingerprint_text, identify_prompt
-from .llm import run_prompt as run_prompt
 from .llm import GovernanceError, LLMClient, LLMResponse, complete, stream
+from .llm import run_prompt as run_prompt
 from .masking import MaskingPolicy, Redactor, mask_payload, mask_text
 from .prompts import (
-    ManagedPrompt, PromptRegistry, agent_prompt_name, create_prompt,
-    get_agent_prompt, get_prompt, get_registry,
+    ManagedPrompt,
+    PromptRegistry,
+    agent_prompt_name,
+    create_prompt,
+    get_agent_prompt,
+    get_prompt,
+    get_registry,
 )
 from .scoring import (
-    Evaluator,
     JUDGE_RUBRICS,
+    Evaluator,
     LLMJudge,
     Score,
     ScoreDataType,
@@ -82,11 +94,28 @@ from .scoring import (
     record_score,
     score,
 )
-from .tracer import (
-    decision as decision, generation as generation, handoff as handoff,
-    policy as policy, retrieval as retrieval, span as span, tool as tool,
-)
 from .tracer import Tracer, get_tracer
+from .tracer import (
+    decision as decision,
+)
+from .tracer import (
+    generation as generation,
+)
+from .tracer import (
+    handoff as handoff,
+)
+from .tracer import (
+    policy as policy,
+)
+from .tracer import (
+    retrieval as retrieval,
+)
+from .tracer import (
+    span as span,
+)
+from .tracer import (
+    tool as tool,
+)
 
 __version__ = "1.4.2"
 
@@ -122,36 +151,89 @@ def flush() -> None:
 
 
 __all__ = [
-    "__version__",
-    # configuration
-    "WatcherConfig", "configure", "get_config", "reset_config",
-    # context
-    "TraceContext", "bind", "use_prompt", "current_context", "get_trace_id",
-    # tracing
-    "Tracer", "get_tracer", "trace", "flush",
-    "span", "tool", "generation", "retrieval", "decision", "handoff", "policy",
-    # decorators
-    "observe", "observe_tool", "observe_agent",
-    # events
-    "Event", "EventType", "Severity", "GenerationEvent", "DecisionEvent",
-    "ToolInvocationEvent", "RetrievalEvent", "RetrievedChunk", "HandoffEvent",
-    "PolicyEvent", "HumanReviewEvent",
-    # prompt identity
-    "PromptIdentity", "identify_prompt", "fingerprint_text",
-    # privacy
-    "MaskingPolicy", "Redactor", "mask_text", "mask_payload",
-    # LLM gateway
-    "LLMClient", "LLMResponse", "GovernanceError", "complete", "stream", "run_prompt",
-    # prompt registry
-    "ManagedPrompt", "PromptRegistry", "get_prompt", "create_prompt",
-    "get_agent_prompt", "agent_prompt_name", "get_registry",
+    "JUDGE_RUBRICS",
     # datasets & experiments
-    "DatasetItem", "ExperimentResult", "create_dataset", "add_item", "capture",
-    "agent_dataset_name",
-    "get_items", "run_experiment",
+    "DatasetItem",
+    "DecisionEvent",
+    "Evaluator",
+    # events
+    "Event",
+    "EventType",
+    "ExperimentResult",
+    "GenerationEvent",
+    "GovernanceError",
+    "HandoffEvent",
+    "HumanReviewEvent",
+    # LLM gateway
+    "LLMClient",
+    "LLMJudge",
+    "LLMResponse",
+    # prompt registry
+    "ManagedPrompt",
+    # privacy
+    "MaskingPolicy",
+    "PolicyEvent",
+    # prompt identity
+    "PromptIdentity",
+    "PromptRegistry",
+    "Redactor",
+    "RetrievalEvent",
+    "RetrievedChunk",
     # scoring & evaluation
-    "Score", "ScoreSource", "ScoreDataType", "score", "record_score",
-    "Evaluator", "LLMJudge", "JUDGE_RUBRICS", "evaluate",
+    "Score",
+    "ScoreDataType",
+    "ScoreSource",
+    "Severity",
+    "ToolInvocationEvent",
+    # context
+    "TraceContext",
+    # tracing
+    "Tracer",
+    # configuration
+    "WatcherConfig",
+    "__version__",
+    "add_item",
+    "agent_dataset_name",
+    "agent_prompt_name",
+    "bind",
+    "capture",
+    "complete",
+    "configure",
+    "create_dataset",
+    "create_prompt",
+    "current_context",
+    "decision",
+    "evaluate",
+    "fingerprint_text",
+    "flush",
+    "generation",
+    "get_agent_prompt",
+    "get_config",
+    "get_items",
+    "get_prompt",
+    "get_registry",
+    "get_trace_id",
+    "get_tracer",
+    "handoff",
+    "identify_prompt",
     # instrumentation
     "instrument_litellm",
+    "mask_payload",
+    "mask_text",
+    # decorators
+    "observe",
+    "observe_agent",
+    "observe_tool",
+    "policy",
+    "record_score",
+    "reset_config",
+    "retrieval",
+    "run_experiment",
+    "run_prompt",
+    "score",
+    "span",
+    "stream",
+    "tool",
+    "trace",
+    "use_prompt",
 ]

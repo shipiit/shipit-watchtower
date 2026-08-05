@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Optional
 
 __all__ = ["WatcherConfig", "configure", "get_config", "reset_config"]
 
@@ -175,7 +174,7 @@ class WatcherConfig:
         return self.enabled and (self.has_langfuse_credentials or self.persist_to_database)
 
 
-_config: Optional[WatcherConfig] = None
+_config: WatcherConfig | None = None
 
 
 def get_config() -> WatcherConfig:

@@ -107,29 +107,25 @@ class TestContext:
         assert current_context().company_id is None
 
     def test_nesting_inherits(self):
-        with bind(company_id="c1"):
-            with bind(user_id="u1"):
-                ctx = current_context()
-                assert ctx.company_id == "c1" and ctx.user_id == "u1"
+        with bind(company_id="c1"), bind(user_id="u1"):
+            ctx = current_context()
+            assert ctx.company_id == "c1" and ctx.user_id == "u1"
 
     def test_tags_merge_without_duplicates(self):
-        with bind(tags=["a"]):
-            with bind(tags=["a", "b"]):
-                assert current_context().tags == ["a", "b"]
+        with bind(tags=["a"]), bind(tags=["a", "b"]):
+            assert current_context().tags == ["a", "b"]
 
     def test_metadata_merges(self):
-        with bind(metadata={"x": 1}):
-            with bind(metadata={"y": 2}):
-                assert current_context().metadata == {"x": 1, "y": 2}
+        with bind(metadata={"x": 1}), bind(metadata={"y": 2}):
+            assert current_context().metadata == {"x": 1, "y": 2}
 
     def test_unknown_fields_ignored(self):
         with bind(not_a_field="x"):
             assert current_context().trace_id is None
 
     def test_restored_after_exception(self):
-        with pytest.raises(ValueError):
-            with bind(company_id="c1"):
-                raise ValueError
+        with pytest.raises(ValueError), bind(company_id="c1"):
+            raise ValueError
         assert current_context().company_id is None
 
     def test_child_returns_new_context(self):
@@ -150,14 +146,12 @@ class TestTrace:
             assert ctx.company_id == "acme" and ctx.cost_center == "ops"
 
     def test_exception_propagates_unchanged(self, tracer):
-        with pytest.raises(ValueError, match="boom"):
-            with tracer.trace("req"):
-                raise ValueError("boom")
+        with pytest.raises(ValueError, match="boom"), tracer.trace("req"):
+            raise ValueError("boom")
 
     def test_exception_recorded_on_trace(self, tracer, sink):
-        with pytest.raises(ValueError):
-            with tracer.trace("req"):
-                raise ValueError("boom")
+        with pytest.raises(ValueError), tracer.trace("req"):
+            raise ValueError("boom")
         assert "ValueError" in str(sink.ended[0][1])
 
     def test_disabled_tracer_emits_nothing(self, sink):
@@ -183,16 +177,17 @@ class TestTrace:
 
 class TestSpans:
     def test_span_recorded(self, tracer, sink):
-        with tracer.trace("req"):
-            with tracer.span("work"):
-                pass
+        with tracer.trace("req"), tracer.span("work"):
+            pass
         assert "work" in sink.names()
 
     def test_spans_nest(self, tracer, sink):
-        with tracer.trace("req"):
-            with tracer.span("outer") as outer:
-                with tracer.span("inner") as inner:
-                    pass
+        with (
+            tracer.trace("req"),
+            tracer.span("outer") as outer,
+            tracer.span("inner") as inner,
+        ):
+            pass
         assert inner.parent_id == outer.id
 
     def test_span_outside_trace_is_dropped(self, tracer, sink):
@@ -201,32 +196,26 @@ class TestSpans:
         assert sink.events == []
 
     def test_span_error_marked_and_reraised(self, tracer, sink):
-        with pytest.raises(ValueError):
-            with tracer.trace("req"):
-                with tracer.span("work"):
-                    raise ValueError("x")
+        with pytest.raises(ValueError), tracer.trace("req"), tracer.span("work"):
+            raise ValueError("x")
         assert sink.by_name("work").severity == Severity.ERROR
 
     def test_duration_measured(self, tracer, sink):
-        with tracer.trace("req"):
-            with tracer.span("work") as span:
-                span.output = "done"
+        with tracer.trace("req"), tracer.span("work") as span:
+            span.output = "done"
         assert sink.by_name("work").duration_ms >= 0
 
 
 class TestTypedEvents:
     def test_tool(self, tracer, sink):
-        with tracer.trace("req"):
-            with tracer.tool("search", arguments={"q": "x"}) as tool:
-                tool.output = {"n": 1}
+        with tracer.trace("req"), tracer.tool("search", arguments={"q": "x"}) as tool:
+            tool.output = {"n": 1}
         event = sink.by_name("tool.search")
         assert event.type == EventType.TOOL_INVOCATION and event.tool_name == "search"
 
     def test_tool_failure_flagged(self, tracer, sink):
-        with pytest.raises(RuntimeError):
-            with tracer.trace("req"):
-                with tracer.tool("bad"):
-                    raise RuntimeError("nope")
+        with pytest.raises(RuntimeError), tracer.trace("req"), tracer.tool("bad"):
+            raise RuntimeError("nope")
         assert sink.by_name("tool.bad").succeeded is False
 
     def test_decision_records_alternatives(self, tracer, sink):
@@ -261,9 +250,11 @@ class TestTypedEvents:
 
     def test_generation_usage_and_prompt(self, tracer, sink):
         prompt = wt.identify_prompt("hello", name="p", version="v1", registered=True)
-        with tracer.trace("req"):
-            with tracer.generation("llm", model="gpt-4o", prompt=prompt) as gen:
-                gen.prompt_tokens, gen.completion_tokens, gen.total_cost = 10, 5, 0.01
+        with (
+            tracer.trace("req"),
+            tracer.generation("llm", model="gpt-4o", prompt=prompt) as gen,
+        ):
+            gen.prompt_tokens, gen.completion_tokens, gen.total_cost = 10, 5, 0.01
         payload = sink.by_name("llm").to_payload()
         assert payload["total_tokens"] == 15
         assert payload["prompt_name"] == "p"
@@ -272,25 +263,22 @@ class TestTypedEvents:
 
 class TestPrivacy:
     def test_input_masked(self, tracer, sink):
-        with tracer.trace("req"):
-            with tracer.span("s", input={"email": "a@b.pl"}):
-                pass
+        with tracer.trace("req"), tracer.span("s", input={"email": "a@b.pl"}):
+            pass
         assert sink.by_name("s").input["email"] == "[EMAIL]"
 
     def test_capture_content_disabled(self, sink):
         wt.configure(capture_content=False)
         t = Tracer(sinks=[sink])
-        with t.trace("req"):
-            with t.span("s", input={"email": "a@b.pl"}):
-                pass
+        with t.trace("req"), t.span("s", input={"email": "a@b.pl"}):
+            pass
         assert sink.by_name("s").input is None
 
     def test_long_content_truncated(self, sink):
         wt.configure(max_content_chars=50)
         t = Tracer(sinks=[sink])
-        with t.trace("req"):
-            with t.span("s", input="y" * 500):
-                pass
+        with t.trace("req"), t.span("s", input="y" * 500):
+            pass
         assert "[truncated]" in sink.by_name("s").input
 
 
@@ -380,9 +368,8 @@ class TestDecorators:
         def boom():
             raise KeyError("k")
 
-        with pytest.raises(KeyError):
-            with installed_tracer.trace("req"):
-                boom()
+        with pytest.raises(KeyError), installed_tracer.trace("req"):
+            boom()
 
     def test_name_defaults_to_qualname(self, installed_tracer, sink):
         @wt.observe()

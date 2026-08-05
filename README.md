@@ -249,6 +249,50 @@ Without this, prompt attribution only covers the call sites you remembered to
 annotate — which is exactly the gap governance cannot have. Works for
 `LLMClient` and for direct `litellm` calls under `instrument_litellm()`.
 
+### Through a gateway
+
+A LiteLLM **proxy** sits between your code and the provider, and that is where
+a lot of teams do cost allocation and prompt governance. `existing_trace_id`
+tells the gateway which trace to join — but nothing about *whose* call it was,
+so the gateway ends up allocating spend it cannot attribute.
+
+Attribution and prompt identity are forwarded with the call:
+
+```python
+with wt.bind(company_id="acme", cost_center="support-ops"):
+    litellm.completion(model="gpt-4o", messages=[...])   # via your proxy
+```
+
+The gateway receives the cost centre, the client, the user, the session, the
+channel, the service and the environment — plus `prompt_name`,
+`prompt_version`, `prompt_fingerprint` and `prompt_registered`, forwarded
+verbatim so a gateway in enforce mode can decide on them without a translation
+table.
+
+Everything comes from the ambient context, never from a lookup afterwards. A
+cost centre resolved after the fact may since have changed, and an attribution
+that is only *usually* right is not one you can bill from.
+
+On by default. The wire names are yours to choose:
+
+```python
+wt.configure(
+    gateway_attribution=True,          # WATCHER_GATEWAY_ATTRIBUTION
+    gateway_key_map={                  # wire name → context field
+        "system_id": "service_name",
+        "environment": "environment",
+        "mpk": "cost_center",
+        "client_id": "company_id",
+    },
+    generation_owner="app",            # WATCHER_GENERATION_OWNER: app | gateway
+)
+```
+
+`generation_owner` decides who writes the generation record when a proxy is in
+the path. Leave it `app` for a proxy you own, with the gateway's own
+server-side logging off. Set it to `gateway` when the proxy already writes
+them — otherwise every call is recorded twice and the cost doubles on paper.
+
 ### Fetch the latest stable prompt
 
 This is the call an agent makes on every turn:

@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 __all__ = ["PromptIdentity", "fingerprint_text", "identify_prompt"]
 
@@ -59,7 +59,7 @@ class PromptIdentity:
 
     name: str
     fingerprint: str
-    version: Optional[str] = None
+    version: str | None = None
     #: True when the prompt resolved from a managed registry rather than
     #: free-form DB/code text. Drives the compliance gap report.
     registered: bool = False
@@ -93,7 +93,7 @@ def identify_prompt(
     text: str,
     *,
     name: str,
-    version: Optional[str] = None,
+    version: str | None = None,
     registered: bool = False,
 ) -> PromptIdentity:
     """Build a :class:`PromptIdentity` for a prompt about to be sent.

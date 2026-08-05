@@ -30,8 +30,9 @@ reason a user's answer fails.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any
 
 from .config import get_config
 from .context import current_context
@@ -40,11 +41,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DatasetItem",
-    "agent_dataset_name",
     "ExperimentResult",
+    "add_item",
+    "agent_dataset_name",
     "capture",
     "create_dataset",
-    "add_item",
     "get_items",
     "run_experiment",
 ]
@@ -57,7 +58,7 @@ class DatasetItem:
     id: str = ""
     input: Any = None
     expected_output: Any = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     #: The trace this was captured from. Provenance matters — an example with
     #: no origin cannot be re-examined when it starts failing.
     source_trace_id: str = ""
@@ -70,7 +71,7 @@ class ExperimentResult:
 
     item_id: str = ""
     output: Any = None
-    scores: Dict[str, Any] = field(default_factory=dict)
+    scores: dict[str, Any] = field(default_factory=dict)
     error: str = ""
     trace_id: str = ""
 
@@ -133,7 +134,7 @@ def _client() -> Any:
 
 
 def create_dataset(name: str, *, description: str = "",
-                   metadata: Optional[Dict[str, Any]] = None) -> bool:
+                   metadata: dict[str, Any] | None = None) -> bool:
     """Create a dataset. Existing datasets are left alone.
 
     Returns whether the dataset exists afterwards, so a startup hook can call
@@ -152,9 +153,9 @@ def create_dataset(name: str, *, description: str = "",
 
 
 def add_item(dataset: str, *, input: Any = None, expected_output: Any = None,
-             metadata: Optional[Dict[str, Any]] = None,
+             metadata: dict[str, Any] | None = None,
              source_trace_id: str = "", source_observation_id: str = "",
-             item_id: str = "") -> Optional[str]:
+             item_id: str = "") -> str | None:
     """Add one example to a dataset. Returns its id, or None on failure.
 
     ``item_id`` makes the write idempotent: re-adding the same id updates the
@@ -165,7 +166,7 @@ def add_item(dataset: str, *, input: Any = None, expected_output: Any = None,
     if client is None:
         return None
     try:
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "dataset_name": dataset,
             "input": input,
             "expected_output": expected_output,
@@ -184,8 +185,8 @@ def add_item(dataset: str, *, input: Any = None, expected_output: Any = None,
 
 
 def capture(dataset: str = "", *, input: Any = None, expected_output: Any = None,
-            metadata: Optional[Dict[str, Any]] = None,
-            create: bool = True) -> Optional[str]:
+            metadata: dict[str, Any] | None = None,
+            create: bool = True) -> str | None:
     """Capture the *current turn* into a dataset.
 
     Called inside a trace, the origin fills itself in::
@@ -234,7 +235,7 @@ def capture(dataset: str = "", *, input: Any = None, expected_output: Any = None
     )
 
 
-def get_items(dataset: str) -> List[DatasetItem]:
+def get_items(dataset: str) -> list[DatasetItem]:
     """Every item in a dataset. Empty list if it does not exist."""
     client = _client()
     if client is None:
@@ -245,7 +246,7 @@ def get_items(dataset: str) -> List[DatasetItem]:
         logger.warning("watcher: could not read dataset %r", dataset, exc_info=True)
         return []
 
-    items: List[DatasetItem] = []
+    items: list[DatasetItem] = []
     for item in getattr(raw, "items", []) or []:
         items.append(DatasetItem(
             id=str(getattr(item, "id", "")),
@@ -264,10 +265,10 @@ def run_experiment(
     *,
     run_name: str,
     description: str = "",
-    metadata: Optional[Dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
     evaluators: Sequence[Any] = (),
-    items: Optional[Iterable[DatasetItem]] = None,
-) -> List[ExperimentResult]:
+    items: Iterable[DatasetItem] | None = None,
+) -> list[ExperimentResult]:
     """Run every item through *task* and record the results as a named run.
 
         wt.run_experiment(
@@ -304,8 +305,8 @@ def run_experiment(
     wanted = {item.id for item in items} if items is not None else None
 
     tracer = get_tracer()
-    results: List[ExperimentResult] = []
-    pending: List[Any] = []
+    results: list[ExperimentResult] = []
+    pending: list[Any] = []
 
     for raw in raw_items:
         item_id = str(getattr(raw, "id", ""))
