@@ -22,15 +22,15 @@ import logging
 import random
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any
 
 from .config import WatcherConfig, get_config
 from .context import TraceContext, bind, current_context
 from .events import (
     DecisionEvent,
     Event,
-    EventType,
     GenerationEvent,
     HandoffEvent,
     PolicyEvent,
@@ -51,11 +51,11 @@ __all__ = ["Tracer", "get_tracer"]
 class Tracer:
     """Creates traces and records typed events against configured sinks."""
 
-    def __init__(self, sinks: Optional[List[Sink]] = None,
-                 config: Optional[WatcherConfig] = None):
+    def __init__(self, sinks: list[Sink] | None = None,
+                 config: WatcherConfig | None = None):
         self._config = config
         self._explicit_sinks = sinks
-        self._sink: Optional[FanOutSink] = None
+        self._sink: FanOutSink | None = None
 
     # -- wiring ---------------------------------------------------------
 
@@ -70,9 +70,9 @@ class Tracer:
             self._sink = FanOutSink(self._explicit_sinks or self._default_sinks())
         return self._sink
 
-    def _default_sinks(self) -> List[Sink]:
+    def _default_sinks(self) -> list[Sink]:
         config = self.config
-        sinks: List[Sink] = []
+        sinks: list[Sink] = []
 
         if config.has_langfuse_credentials:
             try:
@@ -141,7 +141,8 @@ class Tracer:
     # -- traces ---------------------------------------------------------
 
     @contextmanager
-    def trace(self, name: str, *, input: Any = None, **context_fields) -> Iterator[TraceContext]:
+    def trace(self, name: str, *, input: Any = None,
+              **context_fields) -> Iterator[TraceContext]:
         """Open a root trace and bind it as the ambient context.
 
             with tracer.trace("chat.request", company_id=cid, cost_center="support-ops"):
@@ -208,7 +209,7 @@ class Tracer:
     # -- spans ----------------------------------------------------------
 
     @contextmanager
-    def span(self, name: str, *, event: Optional[Event] = None,
+    def span(self, name: str, *, event: Event | None = None,
              input: Any = None, **metadata) -> Iterator[Event]:
         """Open a child span. Yields the event so the caller can enrich it.
 
@@ -262,7 +263,7 @@ class Tracer:
 
     @contextmanager
     def generation(self, name: str, *, model: str = "", provider: str = "",
-                   prompt: Optional[PromptIdentity] = None,
+                   prompt: PromptIdentity | None = None,
                    input: Any = None, **metadata) -> Iterator[GenerationEvent]:
         """An LLM call. Set usage/cost on the yielded event as they become known."""
         node = GenerationEvent(name=name, model=model, provider=provider)
@@ -292,8 +293,8 @@ class Tracer:
             node.error = str(exc)
             raise
 
-    def decision(self, name: str, *, chosen: str, options: List[str],
-                 rationale: str = "", confidence: Optional[float] = None) -> None:
+    def decision(self, name: str, *, chosen: str, options: list[str],
+                 rationale: str = "", confidence: float | None = None) -> None:
         """Record a branch point and the alternatives that were rejected."""
         node = DecisionEvent(
             name=name, chosen=chosen, options_considered=list(options),
@@ -303,7 +304,7 @@ class Tracer:
         node.finish()
         self._emit(node, current_context())
 
-    def retrieval(self, name: str, *, query: str, chunks: List[RetrievedChunk],
+    def retrieval(self, name: str, *, query: str, chunks: list[RetrievedChunk],
                   knowledge_base: str = "") -> None:
         """Record a RAG lookup together with per-chunk provenance."""
         node = RetrievalEvent(
@@ -343,7 +344,7 @@ class Tracer:
             logger.warning("watcher: flush failed", exc_info=True)
 
 
-_tracer: Optional[Tracer] = None
+_tracer: Tracer | None = None
 
 
 def get_tracer() -> Tracer:

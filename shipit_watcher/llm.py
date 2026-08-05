@@ -28,19 +28,25 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any
 
 from .config import get_config
-from .context import current_context
 from .events import Severity
 from .identity import PromptIdentity
 from .tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["LLMClient", "LLMResponse", "GovernanceError",
-           "complete", "stream", "run_prompt"]
+__all__ = [
+    "GovernanceError",
+    "LLMClient",
+    "LLMResponse",
+    "complete",
+    "run_prompt",
+    "stream",
+]
 
 
 class GovernanceError(RuntimeError):
@@ -63,7 +69,7 @@ class LLMResponse:
     finish_reason: str = ""
     #: The provider's raw response, for callers that need tool_calls etc.
     raw: Any = None
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:
@@ -115,7 +121,7 @@ def _extract_cost(response: Any) -> float:
         return 0.0
 
 
-def _extract_text(response: Any) -> tuple[str, str, List[Dict[str, Any]]]:
+def _extract_text(response: Any) -> tuple[str, str, list[dict[str, Any]]]:
     """(text, finish_reason, tool_calls) from a completion response."""
     try:
         choice = response.choices[0]
@@ -165,11 +171,11 @@ class LLMClient:
         self,
         model: str,
         *,
-        api_base: Optional[str] = None,
-        api_key: Optional[str] = None,
-        provider: Optional[str] = None,
+        api_base: str | None = None,
+        api_key: str | None = None,
+        provider: str | None = None,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
+        max_tokens: int | None = None,
         timeout: int = 120,
         max_retries: int = 2,
         fallback_models: Sequence[str] = (),
@@ -188,7 +194,7 @@ class LLMClient:
 
     # -- governance -----------------------------------------------------
 
-    def _check_governance(self, prompt: Optional[PromptIdentity]) -> None:
+    def _check_governance(self, prompt: PromptIdentity | None) -> None:
         """Apply the configured governance level before spending money.
 
         ``audit`` records and allows. ``warn`` additionally emits a policy
@@ -234,8 +240,8 @@ class LLMClient:
             return model
         return f"{self.provider}/{model}" if self.provider else f"openai/{model}"
 
-    def _build_kwargs(self, messages, model, overrides: Dict[str, Any]) -> Dict[str, Any]:
-        kwargs: Dict[str, Any] = {
+    def _build_kwargs(self, messages, model, overrides: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
             "model": self._route(model),
             "messages": messages,
             "temperature": overrides.pop("temperature", self.temperature),
@@ -253,16 +259,16 @@ class LLMClient:
         kwargs.update(overrides)
         return kwargs
 
-    def _models_to_try(self) -> List[str]:
+    def _models_to_try(self) -> list[str]:
         return [self.model, *self.fallback_models]
 
     # -- completion -----------------------------------------------------
 
     def complete(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         *,
-        prompt: Optional[PromptIdentity] = None,
+        prompt: PromptIdentity | None = None,
         name: str = "llm.completion",
         **overrides: Any,
     ) -> LLMResponse:
@@ -276,7 +282,7 @@ class LLMClient:
 
         self._check_governance(prompt)
         tracer = get_tracer()
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for model in self._models_to_try():
             for attempt in range(self.max_retries + 1):
@@ -324,9 +330,9 @@ class LLMClient:
 
     def stream(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         *,
-        prompt: Optional[PromptIdentity] = None,
+        prompt: PromptIdentity | None = None,
         name: str = "llm.stream",
         **overrides: Any,
     ) -> Iterator[str]:
@@ -353,7 +359,7 @@ class LLMClient:
             name, model=self.model, provider=self.provider or "",
             prompt=prompt, input=messages, streaming=True,
         ) as generation:
-            collected: List[str] = []
+            collected: list[str] = []
             prompt_tokens = completion_tokens = 0
 
             for chunk in litellm.completion(**kwargs):
@@ -380,7 +386,7 @@ class LLMClient:
 
 # ── Module-level convenience ─────────────────────────────────────────────
 
-def complete(model: str, messages: List[Dict[str, Any]], **kwargs: Any) -> LLMResponse:
+def complete(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResponse:
     """One-shot completion without constructing a client."""
     client_kwargs = {
         k: kwargs.pop(k)
@@ -391,7 +397,7 @@ def complete(model: str, messages: List[Dict[str, Any]], **kwargs: Any) -> LLMRe
     return LLMClient(model, **client_kwargs).complete(messages, **kwargs)
 
 
-def stream(model: str, messages: List[Dict[str, Any]], **kwargs: Any) -> Iterator[str]:
+def stream(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> Iterator[str]:
     """One-shot streaming completion without constructing a client."""
     client_kwargs = {
         k: kwargs.pop(k)
@@ -407,16 +413,16 @@ def stream(model: str, messages: List[Dict[str, Any]], **kwargs: Any) -> Iterato
 def run_prompt(
     name: str,
     *,
-    variables: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
     user_message: str = "",
-    messages: Optional[List[Dict[str, Any]]] = None,
-    model: Optional[str] = None,
+    messages: list[dict[str, Any]] | None = None,
+    model: str | None = None,
     label: str = "production",
-    version: Optional[str] = None,
-    fallback: Optional[str] = None,
-    api_base: Optional[str] = None,
-    api_key: Optional[str] = None,
-    generation_name: Optional[str] = None,
+    version: str | None = None,
+    fallback: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    generation_name: str | None = None,
     **overrides: Any,
 ) -> LLMResponse:
     """Fetch the live prompt, run it, and record everything about the run.

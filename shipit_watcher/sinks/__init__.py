@@ -2,8 +2,14 @@
 
 from .base import ConsoleSink, FanOutSink, Sink
 
-__all__ = ["Sink", "FanOutSink", "ConsoleSink", "LangfuseSink",
-           "LangfuseOTLPSink", "DjangoSink"]
+__all__ = [
+    "ConsoleSink",
+    "DjangoSink",
+    "FanOutSink",
+    "LangfuseOTLPSink",
+    "LangfuseSink",
+    "Sink",
+]
 
 
 def __getattr__(name):

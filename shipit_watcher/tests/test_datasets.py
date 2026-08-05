@@ -12,8 +12,19 @@ import pytest
 
 import shipit_watcher as wt
 from shipit_watcher import datasets as ds
+from shipit_watcher import tracer as tracer_mod
 from shipit_watcher.config import reset_config
 from shipit_watcher.scoring import Evaluator, Score, ScoreSource
+from shipit_watcher.tracer import Tracer
+
+
+class _NullSink:
+    """Accepts everything, records nothing. Enough to make a tracer active."""
+
+    def start_trace(self, *a, **k): ...
+    def end_trace(self, *a, **k): ...
+    def event(self, *a, **k): ...
+    def flush(self, *a, **k): ...
 
 
 class FakeItem:
@@ -146,6 +157,11 @@ class TestRunExperiment:
         fake = FakeClient(items=items)
         monkeypatch.setattr(ds, "_client", lambda: fake)
         monkeypatch.setattr(ds, "_flush_traces", lambda *a, **k: None)
+        # An experiment links each result back to its trace, and a tracer with
+        # no sink never opens one — so without this the run produces no trace
+        # id, the link is skipped, and the test reads as a linking bug rather
+        # than a missing fixture.
+        monkeypatch.setattr(tracer_mod, "get_tracer", lambda: Tracer(sinks=[_NullSink()]))
         return items
 
     def test_runs_every_item(self, two_items):

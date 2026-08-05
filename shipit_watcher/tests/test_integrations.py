@@ -122,7 +122,6 @@ class TestLangfuseSink:
         return LangfuseSink(client=client), client
 
     def test_unavailable_without_client(self):
-        import shipit_watcher as wt
         from shipit_watcher.sinks.langfuse_sink import LangfuseSink
 
         # Stated explicitly rather than inherited from the environment: a
@@ -291,7 +290,8 @@ class TestLiteLLMInstrumentation:
 
         inst._instrumented = False
         monkeypatch.setitem(sys.modules, "litellm", None)
-        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+        real_import = (__builtins__["__import__"] if isinstance(__builtins__, dict)
+                       else __import__)
 
         def fake_import(name, *a, **k):
             if name == "litellm":
@@ -302,9 +302,9 @@ class TestLiteLLMInstrumentation:
         assert inst.instrument() is False
 
     def test_handler_records_into_ambient_trace(self, fake_litellm):
+        import shipit_watcher.tracer as tmod
         from shipit_watcher.instrumentation import litellm as inst
         from shipit_watcher.tracer import Tracer
-        import shipit_watcher.tracer as tmod
 
         captured = []
 
@@ -338,9 +338,9 @@ class TestLiteLLMInstrumentation:
         trace. Dropping it made instrumentation *lose* work; it gets a trace
         of its own instead, named `rag.embedding` rather than
         `litellm-aembedding`."""
+        import shipit_watcher.tracer as tmod
         from shipit_watcher.instrumentation import litellm as inst
         from shipit_watcher.tracer import Tracer
-        import shipit_watcher.tracer as tmod
 
         captured = []
 
@@ -378,9 +378,9 @@ class TestLiteLLMInstrumentation:
         }) == "rag.documents"
 
     def test_handler_records_failures(self, fake_litellm):
+        import shipit_watcher.tracer as tmod
         from shipit_watcher.instrumentation import litellm as inst
         from shipit_watcher.tracer import Tracer
-        import shipit_watcher.tracer as tmod
 
         captured = []
 
@@ -432,9 +432,8 @@ class TestAmbientPrompt:
     """`wt.use_prompt(...)` attributes calls that cannot pass metadata."""
 
     def test_ambient_prompt_reaches_a_generation(self):
-        import shipit_watcher as wt
-        from shipit_watcher.tracer import Tracer
         import shipit_watcher.tracer as tmod
+        from shipit_watcher.tracer import Tracer
 
         class Collector:
             def __init__(self): self.events = []
@@ -449,10 +448,12 @@ class TestAmbientPrompt:
             identity = wt.identify_prompt("You are a support assistant.",
                                           name="support-assistant", version="2",
                                           registered=True)
-            with tmod._tracer.trace("turn"):
-                with wt.use_prompt(identity):
-                    with tmod._tracer.generation("llm.x", model="m"):
-                        pass
+            with (
+                tmod._tracer.trace("turn"),
+                wt.use_prompt(identity),
+                tmod._tracer.generation("llm.x", model="m"),
+            ):
+                pass
         finally:
             tmod._tracer = previous
 
@@ -460,9 +461,8 @@ class TestAmbientPrompt:
         assert sink.events[0].prompt["prompt_version"] == "2"
 
     def test_explicit_prompt_wins_over_ambient(self):
-        import shipit_watcher as wt
-        from shipit_watcher.tracer import Tracer
         import shipit_watcher.tracer as tmod
+        from shipit_watcher.tracer import Tracer
 
         class Collector:
             def __init__(self): self.events = []
@@ -476,17 +476,18 @@ class TestAmbientPrompt:
         try:
             ambient = wt.identify_prompt("a", name="ambient")
             explicit = wt.identify_prompt("b", name="explicit")
-            with tmod._tracer.trace("turn"):
-                with wt.use_prompt(ambient):
-                    with tmod._tracer.generation("llm.x", model="m", prompt=explicit):
-                        pass
+            with (
+                tmod._tracer.trace("turn"),
+                wt.use_prompt(ambient),
+                tmod._tracer.generation("llm.x", model="m", prompt=explicit),
+            ):
+                pass
         finally:
             tmod._tracer = previous
 
         assert sink.events[0].prompt["prompt_name"] == "explicit"
 
     def test_binding_does_not_leak_past_the_block(self):
-        import shipit_watcher as wt
         from shipit_watcher.context import current_context
 
         with wt.use_prompt(wt.identify_prompt("x", name="p")):
@@ -494,7 +495,6 @@ class TestAmbientPrompt:
         assert not current_context().prompt
 
     def test_accepts_a_managed_prompt(self):
-        import shipit_watcher as wt
         from shipit_watcher.context import current_context
         from shipit_watcher.prompts import ManagedPrompt
 
@@ -528,7 +528,8 @@ class TestCallbackDispatch:
         import builtins
 
         from shipit_watcher.instrumentation.litellm import (
-            WatcherLiteLLMHandler, _handler_class,
+            WatcherLiteLLMHandler,
+            _handler_class,
         )
 
         real_import = builtins.__import__
@@ -547,8 +548,8 @@ class TestContextAcrossThreads:
     `threading.Thread`, which does not inherit contextvars."""
 
     def test_context_is_stamped_onto_the_request(self):
-        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _stamp
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _stamp
 
         with bind(trace_id="t" * 32, user_id="user@example.com",
                   session_id="s1", cost_center="ops"):
@@ -565,8 +566,8 @@ class TestContextAcrossThreads:
         assert "metadata" not in _stamp({"model": "gpt-4o"})
 
     def test_caller_metadata_is_preserved(self):
-        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _stamp
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _CONTEXT_KEY, _stamp
 
         with bind(trace_id="t" * 32):
             kwargs = _stamp({"metadata": {"generation_name": "llm.mine"}})
@@ -578,8 +579,8 @@ class TestContextAcrossThreads:
         LiteLLM's callback thread has no trace to attach to."""
         import threading
 
-        from shipit_watcher.instrumentation.litellm import _context_from, _stamp
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _context_from, _stamp
 
         with bind(trace_id="a" * 32, user_id="user@example.com"):
             kwargs = _stamp({"model": "gpt-4o"})
@@ -595,8 +596,8 @@ class TestContextAcrossThreads:
         assert seen["context"].user_id == "user@example.com"
 
     def test_ambient_context_is_the_fallback(self):
-        from shipit_watcher.instrumentation.litellm import _context_from
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _context_from
 
         with bind(trace_id="b" * 32):
             assert _context_from({}).trace_id == "b" * 32
@@ -639,8 +640,8 @@ class TestProxyTraceForwarding:
         """`metadata` is not an OpenAI field and litellm is normally run with
         drop_params=True, so it never reaches the proxy. extra_body is
         forwarded verbatim."""
-        from shipit_watcher.instrumentation.litellm import _stamp
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _stamp
 
         with bind(trace_id="d" * 32, session_id="s1", user_id="user@example.com"):
             kwargs = _stamp({"model": "gpt-4o"})
@@ -651,8 +652,8 @@ class TestProxyTraceForwarding:
         assert forwarded["trace_user_id"] == "user@example.com"
 
     def test_caller_extra_body_is_preserved(self):
-        from shipit_watcher.instrumentation.litellm import _stamp
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _stamp
 
         with bind(trace_id="e" * 32):
             kwargs = _stamp({"extra_body": {"custom": 1}})
@@ -660,8 +661,8 @@ class TestProxyTraceForwarding:
         assert "existing_trace_id" in kwargs["extra_body"]["metadata"]
 
     def test_caller_choice_wins(self):
-        from shipit_watcher.instrumentation.litellm import _stamp
         from shipit_watcher.context import bind
+        from shipit_watcher.instrumentation.litellm import _stamp
 
         with bind(trace_id="f" * 32):
             kwargs = _stamp({"metadata": {"existing_trace_id": "chosen"}})

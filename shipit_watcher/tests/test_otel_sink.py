@@ -15,16 +15,12 @@ import json
 
 import pytest
 
-from shipit_watcher.config import reset_config
 import shipit_watcher as wt
+from shipit_watcher.config import reset_config
 from shipit_watcher.context import TraceContext
 from shipit_watcher.events import (
     Event,
     EventType,
-    GenerationEvent,
-    PolicyEvent,
-    RetrievalEvent,
-    Severity,
     ToolInvocationEvent,
 )
 from shipit_watcher.sinks.langfuse_otel_sink import (
@@ -58,7 +54,7 @@ def attrs(span):
     """Attributes as a plain dict, unwrapping the OTLP value envelope."""
     out = {}
     for a in span["attributes"]:
-        (kind, value), = a["value"].items()
+        (_kind, value), = a["value"].items()
         out[a["key"]] = value
     return out
 
@@ -101,9 +97,8 @@ class TestObservationTypes:
 
     def test_tool_becomes_a_tool_node(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.tool("list_orders"):
-                pass
+        with tracer.trace("turn"), tracer.tool("list_orders"):
+            pass
         _, spans = sink.sent[0]
         tool = next(s for s in spans if "list_orders" in s["name"])
         assert attrs(tool)["langfuse.observation.type"] == "tool"
@@ -138,9 +133,8 @@ class TestParenting:
         the ingestion job discards the whole trace — 200 on export, 404 on
         lookup, nothing in between to explain it."""
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.tool("list_orders"):
-                pass
+        with tracer.trace("turn"), tracer.tool("list_orders"):
+            pass
         _, spans = sink.sent[0]
         root, child = spans[0], spans[1]
         assert "parentSpanId" not in root
@@ -158,19 +152,16 @@ class TestParenting:
 
     def test_nesting_is_preserved(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.span("outer"):
-                with tracer.span("inner"):
-                    pass
+        with tracer.trace("turn"), tracer.span("outer"), tracer.span("inner"):
+            pass
         _, spans = sink.sent[0]
         by_name = {s["name"]: s for s in spans}
         assert by_name["inner"]["parentSpanId"] == by_name["outer"]["spanId"]
 
     def test_all_spans_share_the_trace_id(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.tool("a"):
-                pass
+        with tracer.trace("turn"), tracer.tool("a"):
+            pass
         _, spans = sink.sent[0]
         assert len({s["traceId"] for s in spans}) == 1
 
@@ -201,9 +192,8 @@ class TestMetadataEncoding:
 
     def test_observation_metadata_is_a_single_attribute(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.tool("list_orders"):
-                pass
+        with tracer.trace("turn"), tracer.tool("list_orders"):
+            pass
         _, spans = sink.sent[0]
         keys = attrs(spans[1])
         assert "langfuse.observation.metadata" in keys
@@ -214,9 +204,8 @@ class TestMetadataEncoding:
         drops the generation and keeps the rest — a graph with the LLM call
         missing from it."""
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.generation("llm.x", model="m") as g:
-                g.prompt = {"prompt_name": "support-assistant", "prompt_version": "2"}
+        with tracer.trace("turn"), tracer.generation("llm.x", model="m") as g:
+            g.prompt = {"prompt_name": "support-assistant", "prompt_version": "2"}
         _, spans = sink.sent[0]
         keys = attrs(spans[1])
         assert not any(k.startswith("langfuse.observation.prompt.") for k in keys)
@@ -225,9 +214,8 @@ class TestMetadataEncoding:
 
     def test_prompt_link_omitted_when_unknown(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.generation("llm.x", model="m"):
-                pass
+        with tracer.trace("turn"), tracer.generation("llm.x", model="m"):
+            pass
         _, spans = sink.sent[0]
         assert "langfuse.observation.prompt" not in attrs(spans[1])
 
@@ -262,9 +250,8 @@ class TestTraceAttributes:
     def test_root_encloses_its_children_in_time(self, sink):
         """A root that ends before its children collapses the timeline."""
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.tool("slow"):
-                pass
+        with tracer.trace("turn"), tracer.tool("slow"):
+            pass
         _, spans = sink.sent[0]
         root = spans[0]
         for child in spans[1:]:
@@ -275,10 +262,12 @@ class TestTraceAttributes:
 class TestGenerationAttributes:
     def test_usage_and_cost_are_recorded(self, sink):
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.generation("llm.x", model="gemini-2.5-flash") as g:
-                g.prompt_tokens, g.completion_tokens = 467, 104
-                g.total_cost = 0.0004
+        with (
+            tracer.trace("turn"),
+            tracer.generation("llm.x", model="gemini-2.5-flash") as g,
+        ):
+            g.prompt_tokens, g.completion_tokens = 467, 104
+            g.total_cost = 0.0004
         _, spans = sink.sent[0]
         a = attrs(spans[1])
         assert a["gen_ai.request.model"] == "gemini-2.5-flash"
@@ -290,9 +279,8 @@ class TestGenerationAttributes:
         """Reporting $0 as a fact is worse than reporting nothing — it makes
         an unpriced model look free."""
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.generation("llm.x", model="m"):
-                pass
+        with tracer.trace("turn"), tracer.generation("llm.x", model="m"):
+            pass
         _, spans = sink.sent[0]
         assert "langfuse.observation.cost_details" not in attrs(spans[1])
 
@@ -300,10 +288,8 @@ class TestGenerationAttributes:
 class TestErrors:
     def test_error_severity_sets_the_otlp_status(self, sink):
         tracer = Tracer(sinks=[sink])
-        with pytest.raises(ValueError):
-            with tracer.trace("turn"):
-                with tracer.span("boom"):
-                    raise ValueError("no")
+        with pytest.raises(ValueError), tracer.trace("turn"), tracer.span("boom"):
+            raise ValueError("no")
         _, spans = sink.sent[0]
         failed = next(s for s in spans if s["name"] == "boom")
         assert failed["status"]["code"] == 2
@@ -312,9 +298,8 @@ class TestErrors:
         """OK means "asserted successful", which a span that merely did not
         raise has not earned."""
         tracer = Tracer(sinks=[sink])
-        with tracer.trace("turn"):
-            with tracer.span("fine"):
-                pass
+        with tracer.trace("turn"), tracer.span("fine"):
+            pass
         _, spans = sink.sent[0]
         assert next(s for s in spans if s["name"] == "fine")["status"]["code"] == 0
 

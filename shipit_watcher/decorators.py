@@ -16,17 +16,18 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from .events import Event, EventType
 from .tracer import get_tracer
 
-__all__ = ["observe", "observe_tool", "observe_agent"]
+__all__ = ["observe", "observe_agent", "observe_tool"]
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def _describe(func: Callable[..., Any], name: Optional[str]) -> str:
+def _describe(func: Callable[..., Any], name: str | None) -> str:
     if name:
         return name
     module = getattr(func, "__module__", "") or ""
@@ -51,7 +52,7 @@ def _capture_args(func, args, kwargs, capture: bool) -> Any:
 
 
 def observe(
-    name: Optional[str] = None,
+    name: str | None = None,
     *,
     event_type: EventType = EventType.SPAN,
     capture_input: bool = True,
@@ -79,7 +80,8 @@ def observe(
             async def async_gen_wrapper(*args, **kwargs):
                 tracer = get_tracer()
                 payload = _capture_args(func, args, kwargs, capture_input)
-                with tracer.span(span_name, event=_make_event(), input=payload, **metadata) as span:
+                with tracer.span(span_name, event=_make_event(), input=payload,
+                                 **metadata) as span:
                     count = 0
                     async for item in func(*args, **kwargs):
                         count += 1
@@ -96,7 +98,8 @@ def observe(
             def gen_wrapper(*args, **kwargs):
                 tracer = get_tracer()
                 payload = _capture_args(func, args, kwargs, capture_input)
-                with tracer.span(span_name, event=_make_event(), input=payload, **metadata) as span:
+                with tracer.span(span_name, event=_make_event(), input=payload,
+                                 **metadata) as span:
                     count = 0
                     for item in func(*args, **kwargs):
                         count += 1
@@ -111,7 +114,8 @@ def observe(
             async def async_wrapper(*args, **kwargs):
                 tracer = get_tracer()
                 payload = _capture_args(func, args, kwargs, capture_input)
-                with tracer.span(span_name, event=_make_event(), input=payload, **metadata) as span:
+                with tracer.span(span_name, event=_make_event(), input=payload,
+                                 **metadata) as span:
                     result = await func(*args, **kwargs)
                     if capture_output:
                         span.output = result
@@ -134,7 +138,7 @@ def observe(
     return decorate
 
 
-def observe_tool(tool_name: Optional[str] = None, **metadata: Any) -> Callable[[F], F]:
+def observe_tool(tool_name: str | None = None, **metadata: Any) -> Callable[[F], F]:
     """Record a function as a tool invocation.
 
     Distinct from :func:`observe` because tool calls are counted, costed and
@@ -172,7 +176,7 @@ def observe_tool(tool_name: Optional[str] = None, **metadata: Any) -> Callable[[
     return decorate
 
 
-def observe_agent(agent_name: Optional[str] = None, **metadata: Any) -> Callable[[F], F]:
+def observe_agent(agent_name: str | None = None, **metadata: Any) -> Callable[[F], F]:
     """Open a root trace for an agent's whole turn.
 
     Use at the outermost entry point. Everything below attaches automatically,

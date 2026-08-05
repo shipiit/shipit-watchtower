@@ -30,33 +30,34 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from enum import StrEnum
+from typing import Any
 
 from .context import current_context
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ScoreSource",
-    "ScoreDataType",
-    "Score",
+    "JUDGE_RUBRICS",
     "Evaluator",
     "LLMJudge",
-    "JUDGE_RUBRICS",
-    "score",
+    "Score",
+    "ScoreDataType",
+    "ScoreSource",
     "record_score",
+    "score",
 ]
 
 
-class ScoreSource(str, Enum):
+class ScoreSource(StrEnum):
     HUMAN = "human"
     LLM_JUDGE = "llm_judge"
     PROGRAMMATIC = "programmatic"
 
 
-class ScoreDataType(str, Enum):
+class ScoreDataType(StrEnum):
     NUMERIC = "numeric"
     BOOLEAN = "boolean"
     CATEGORICAL = "categorical"
@@ -72,16 +73,16 @@ class Score:
     data_type: ScoreDataType = ScoreDataType.NUMERIC
     comment: str = ""
 
-    trace_id: Optional[str] = None
-    observation_id: Optional[str] = None
+    trace_id: str | None = None
+    observation_id: str | None = None
     #: Denormalised so a score is filterable without joining back to the trace.
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
-    company_id: Optional[str] = None
+    user_id: str | None = None
+    session_id: str | None = None
+    company_id: str | None = None
 
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Fill from the ambient context so callers rarely pass these by hand.
@@ -98,7 +99,7 @@ class Score:
             self.data_type = ScoreDataType.CATEGORICAL
 
     @property
-    def numeric_value(self) -> Optional[float]:
+    def numeric_value(self) -> float | None:
         """Comparable form, for aggregation. ``None`` when not meaningful."""
         if isinstance(self.value, bool):
             return 1.0 if self.value else 0.0
@@ -106,7 +107,7 @@ class Score:
             return float(self.value)
         return None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -132,10 +133,10 @@ class Evaluator:
     name: str = "evaluator"
     source: ScoreSource = ScoreSource.PROGRAMMATIC
 
-    def evaluate(self, *, input: Any, output: Any, **context) -> Optional[Score]:
+    def evaluate(self, *, input: Any, output: Any, **context) -> Score | None:
         raise NotImplementedError
 
-    def __call__(self, *, input: Any, output: Any, **context) -> Optional[Score]:
+    def __call__(self, *, input: Any, output: Any, **context) -> Score | None:
         """Run the evaluator, absorbing failures.
 
         An evaluator that raises must not fail the request it is judging — the
@@ -151,7 +152,7 @@ class Evaluator:
 #: Rubrics kept as data so they can be versioned, reviewed and A/B tested
 #: rather than buried in code. Each asks for one dimension — a judge asked for
 #: an overall score returns a number nobody can act on.
-JUDGE_RUBRICS: Dict[str, str] = {
+JUDGE_RUBRICS: dict[str, str] = {
     "faithfulness": (
         "Does the ANSWER contain only claims supported by the CONTEXT? "
         "Penalise anything invented, however plausible."
@@ -207,9 +208,9 @@ class LLMJudge(Evaluator):
         completion_fn: Callable[[str], str],
         *,
         criterion: str = "faithfulness",
-        rubric: Optional[str] = None,
-        name: Optional[str] = None,
-        threshold: Optional[float] = None,
+        rubric: str | None = None,
+        name: str | None = None,
+        threshold: float | None = None,
     ):
         self._complete = completion_fn
         self.criterion = criterion
@@ -219,7 +220,7 @@ class LLMJudge(Evaluator):
         self.threshold = threshold
 
     def evaluate(self, *, input: Any, output: Any, context: Any = None,
-                 **_) -> Optional[Score]:
+                 **_) -> Score | None:
         context_block = f"CONTEXT:\n{context}\n\n" if context else ""
         prompt = _JUDGE_TEMPLATE.format(
             criterion=self.criterion,
@@ -234,7 +235,7 @@ class LLMJudge(Evaluator):
         if value is None:
             return None
 
-        metadata: Dict[str, Any] = {"criterion": self.criterion, "raw": raw[:500]}
+        metadata: dict[str, Any] = {"criterion": self.criterion, "raw": raw[:500]}
         if self.threshold is not None:
             metadata["below_threshold"] = value < self.threshold
 
@@ -248,7 +249,7 @@ class LLMJudge(Evaluator):
         )
 
     @staticmethod
-    def _parse(raw: str) -> tuple[Optional[float], str]:
+    def _parse(raw: str) -> tuple[float | None, str]:
         """Extract the score, tolerating the fences models like to add.
 
         A judge that returns prose instead of JSON is a failed evaluation, not
@@ -322,13 +323,13 @@ def evaluate(
     input: Any,
     output: Any,
     **context: Any,
-) -> List[Score]:
+) -> list[Score]:
     """Run several evaluators and record every score they return.
 
     One evaluator failing does not stop the rest — they are independent
     opinions, and a partial set is more useful than none.
     """
-    scores: List[Score] = []
+    scores: list[Score] = []
     for evaluator in evaluators:
         result = evaluator(input=input, output=output, **context)
         if result is not None:

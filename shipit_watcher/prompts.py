@@ -29,8 +29,9 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Sequence
+from typing import Any
 
 from .config import get_config
 from .identity import PromptIdentity, fingerprint_text
@@ -38,8 +39,13 @@ from .identity import PromptIdentity, fingerprint_text
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ManagedPrompt", "PromptRegistry", "get_registry",
-    "get_prompt", "create_prompt", "get_agent_prompt", "agent_prompt_name",
+    "ManagedPrompt",
+    "PromptRegistry",
+    "agent_prompt_name",
+    "create_prompt",
+    "get_agent_prompt",
+    "get_prompt",
+    "get_registry",
 ]
 
 #: Langfuse's template syntax.
@@ -55,9 +61,9 @@ class ManagedPrompt:
 
     name: str
     template: str
-    version: Optional[str] = None
+    version: str | None = None
     labels: tuple[str, ...] = ()
-    config: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     #: False when this came from a fallback rather than the registry. Drives
     #: the compliance gap report, so it must never default to True.
     registered: bool = False
@@ -73,7 +79,7 @@ class ManagedPrompt:
         visible in the trace because the raw ``{{name}}`` survives into the
         recorded prompt.
         """
-        def replace(match: "re.Match[str]") -> str:
+        def replace(match: re.Match[str]) -> str:
             key = match.group(1)
             return str(variables[key]) if key in variables else match.group(0)
 
@@ -93,7 +99,7 @@ class ManagedPrompt:
             registered=self.registered,
         )
 
-    def as_metadata(self) -> Dict[str, Any]:
+    def as_metadata(self) -> dict[str, Any]:
         data = self.identity.as_metadata()
         data["prompt_stale"] = self.stale
         return data
@@ -135,7 +141,7 @@ class PromptRegistry:
     def __init__(self, client: Any = None, ttl_seconds: float = DEFAULT_TTL_SECONDS):
         self._client = client
         self._ttl = ttl_seconds
-        self._cache: Dict[str, _CacheEntry] = {}
+        self._cache: dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
 
     # -- client ---------------------------------------------------------
@@ -162,17 +168,17 @@ class PromptRegistry:
     # -- resolution -----------------------------------------------------
 
     @staticmethod
-    def _cache_key(name: str, version: Optional[str], label: Optional[str]) -> str:
+    def _cache_key(name: str, version: str | None, label: str | None) -> str:
         return f"{name}::{version or ''}::{label or ''}"
 
     def get(
         self,
         name: str,
         *,
-        version: Optional[str] = None,
-        label: Optional[str] = "production",
-        fallback: Optional[str] = None,
-        ttl_seconds: Optional[float] = None,
+        version: str | None = None,
+        label: str | None = "production",
+        fallback: str | None = None,
+        ttl_seconds: float | None = None,
     ) -> ManagedPrompt:
         """Resolve a prompt.
 
@@ -234,13 +240,13 @@ class PromptRegistry:
             self._cache[key] = _CacheEntry(resolved, time.time())
         return resolved
 
-    def _fetch(self, name: str, *, version: Optional[str],
-               label: Optional[str]) -> Optional[ManagedPrompt]:
+    def _fetch(self, name: str, *, version: str | None,
+               label: str | None) -> ManagedPrompt | None:
         client = self._get_client()
         if client is None:
             return None
         try:
-            kwargs: Dict[str, Any] = {}
+            kwargs: dict[str, Any] = {}
             if version:
                 kwargs["version"] = int(version) if str(version).isdigit() else version
             elif label:
@@ -287,8 +293,8 @@ class PromptRegistry:
         *,
         labels: Sequence[str] = ("production",),
         tags: Sequence[str] = (),
-        config: Optional[Dict[str, Any]] = None,
-        commit_message: Optional[str] = None,
+        config: dict[str, Any] | None = None,
+        commit_message: str | None = None,
     ) -> ManagedPrompt:
         """Publish a new version of a prompt and return it.
 
@@ -341,7 +347,7 @@ class PromptRegistry:
             registered=True,
         )
 
-    def invalidate(self, name: Optional[str] = None) -> None:
+    def invalidate(self, name: str | None = None) -> None:
         """Drop cached prompts — all, or just one name."""
         with self._lock:
             if name is None:
@@ -351,7 +357,7 @@ class PromptRegistry:
                     del self._cache[key]
 
 
-_registry: Optional[PromptRegistry] = None
+_registry: PromptRegistry | None = None
 
 
 def get_registry() -> PromptRegistry:
@@ -362,9 +368,9 @@ def get_registry() -> PromptRegistry:
     return _registry
 
 
-def get_prompt(name: str, *, version: Optional[str] = None,
-               label: Optional[str] = "production",
-               fallback: Optional[str] = None, **variables: Any) -> ManagedPrompt:
+def get_prompt(name: str, *, version: str | None = None,
+               label: str | None = "production",
+               fallback: str | None = None, **variables: Any) -> ManagedPrompt:
     """Fetch a managed prompt, optionally compiling it in one step.
 
         prompt = wt.get_prompt("support-assistant", fallback=LOCAL_DEFAULT)
@@ -376,8 +382,8 @@ def get_prompt(name: str, *, version: Optional[str] = None,
 def create_prompt(name: str, template: Any, *,
                   labels: Sequence[str] = ("production",),
                   tags: Sequence[str] = (),
-                  config: Optional[Dict[str, Any]] = None,
-                  commit_message: Optional[str] = None) -> ManagedPrompt:
+                  config: dict[str, Any] | None = None,
+                  commit_message: str | None = None) -> ManagedPrompt:
     """Publish a prompt version.
 
         wt.create_prompt(
@@ -421,12 +427,14 @@ def agent_prompt_name(agent: Any) -> str:
         or str(agent or "")
     )
     slug = re.sub(r"[^a-z0-9]+", "-", str(raw).strip().lower()).strip("-")
-    return f"{AGENT_PROMPT_PREFIX}{AGENT_PROMPT_SEPARATOR}{slug}" if slug else AGENT_PROMPT_PREFIX
+    if not slug:
+        return AGENT_PROMPT_PREFIX
+    return f"{AGENT_PROMPT_PREFIX}{AGENT_PROMPT_SEPARATOR}{slug}"
 
 
 def get_agent_prompt(agent: Any, *, label: str = "production",
-                     version: Optional[str] = None,
-                     fallback: Optional[str] = None) -> ManagedPrompt:
+                     version: str | None = None,
+                     fallback: str | None = None) -> ManagedPrompt:
     """The live prompt for one agent.
 
         prompt = wt.get_agent_prompt(agent, fallback=agent.system_prompt)

@@ -16,7 +16,7 @@ version is not ours to dictate.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ..config import get_config
 from ..context import TraceContext
@@ -33,14 +33,14 @@ class LangfuseSink:
     def __init__(self, client: Any = None):
         self._client = client or self._build_client()
         # trace_id -> the SDK's trace handle.
-        self._traces: Dict[str, Any] = {}
+        self._traces: dict[str, Any] = {}
         # event_id -> that observation's handle. Langfuse nests by calling
         # .span()/.generation() on the PARENT handle, not on the trace — using
         # the trace for everything is what produced a flat list instead of a
         # tree.
-        self._observations: Dict[str, Any] = {}
+        self._observations: dict[str, Any] = {}
         # trace_id -> events awaiting an ordered flush.
-        self._pending: Dict[str, list] = {}
+        self._pending: dict[str, list] = {}
 
     # -- construction ---------------------------------------------------
 
@@ -113,7 +113,7 @@ class LangfuseSink:
             logger.warning("watcher: langfuse start_trace failed", exc_info=True)
 
     def end_trace(self, trace_id: str, output: Any = None,
-                  metadata: Optional[Dict[str, Any]] = None) -> None:
+                  metadata: dict[str, Any] | None = None) -> None:
         # Emit buffered observations first — they attach to this trace.
         self._flush_pending(trace_id)
 

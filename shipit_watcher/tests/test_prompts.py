@@ -15,7 +15,10 @@ import pytest
 
 from shipit_watcher.config import reset_config
 from shipit_watcher.prompts import (
-    ManagedPrompt, PromptRegistry, agent_prompt_name, get_registry,
+    ManagedPrompt,
+    PromptRegistry,
+    agent_prompt_name,
+    get_registry,
 )
 
 
@@ -68,13 +71,16 @@ class TestManagedPrompt:
     def test_identity_fingerprints_the_template(self):
         """Not the compiled text — otherwise every request looks like a new version."""
         p = ManagedPrompt(name="p", template="Hi {{name}}")
-        assert p.identity.fingerprint == ManagedPrompt(name="p", template="Hi {{name}}").identity.fingerprint
+        same = ManagedPrompt(name="p", template="Hi {{name}}")
+        assert p.identity.fingerprint == same.identity.fingerprint
 
     def test_identity_carries_registration(self):
-        assert ManagedPrompt(name="p", template="x", registered=True).identity.registered is True
+        registered = ManagedPrompt(name="p", template="x", registered=True)
+        assert registered.identity.registered is True
 
     def test_metadata_includes_staleness(self):
-        assert ManagedPrompt(name="p", template="x", stale=True).as_metadata()["prompt_stale"] is True
+        stale = ManagedPrompt(name="p", template="x", stale=True)
+        assert stale.as_metadata()["prompt_stale"] is True
 
 
 class TestResolution:
@@ -143,9 +149,11 @@ class TestCaching:
     def test_invalidate_all(self):
         client = FakeClient({"a": FakePrompt("A"), "b": FakePrompt("B")})
         registry = PromptRegistry(client=client)
-        registry.get("a"); registry.get("b")
+        registry.get("a")
+        registry.get("b")
         registry.invalidate()
-        registry.get("a"); registry.get("b")
+        registry.get("a")
+        registry.get("b")
         assert client.calls == 4
 
     def test_versions_cached_separately(self):

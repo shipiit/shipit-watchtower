@@ -21,25 +21,25 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional
+from enum import StrEnum
+from typing import Any
 
 __all__ = [
-    "EventType",
-    "Severity",
-    "Event",
     "DecisionEvent",
-    "ToolInvocationEvent",
+    "Event",
+    "EventType",
+    "GenerationEvent",
+    "HandoffEvent",
+    "HumanReviewEvent",
+    "PolicyEvent",
     "RetrievalEvent",
     "RetrievedChunk",
-    "HandoffEvent",
-    "PolicyEvent",
-    "HumanReviewEvent",
-    "GenerationEvent",
+    "Severity",
+    "ToolInvocationEvent",
 ]
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """The kinds of step an AI system takes.
 
     Deliberately closed. A new kind of step should be a considered addition to
@@ -58,7 +58,7 @@ class EventType(str, Enum):
     SPAN = "span"                      # generic timing, no semantics
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     DEBUG = "DEBUG"
     DEFAULT = "DEFAULT"
     WARNING = "WARNING"
@@ -72,15 +72,15 @@ class Event:
     name: str
     type: EventType = EventType.SPAN
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     started_at: float = field(default_factory=time.time)
-    ended_at: Optional[float] = None
+    ended_at: float | None = None
     severity: Severity = Severity.DEFAULT
     status_message: str = ""
     input: Any = None
     output: Any = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
 
     @property
     def duration_ms(self) -> int:
@@ -92,9 +92,9 @@ class Event:
         self,
         *,
         output: Any = None,
-        severity: Optional[Severity] = None,
+        severity: Severity | None = None,
         status_message: str = "",
-    ) -> "Event":
+    ) -> Event:
         self.ended_at = time.time()
         if output is not None:
             self.output = output
@@ -104,7 +104,7 @@ class Event:
             self.status_message = status_message
         return self
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         """Flat dict for a sink. Type and timing travel as metadata so any
         backend can carry them without a bespoke schema."""
         return {
@@ -125,13 +125,13 @@ class GenerationEvent(Event):
     completion_tokens: int = 0
     total_cost: float = 0.0
     #: Set from shipit_watcher.identity.PromptIdentity.as_metadata()
-    prompt: Dict[str, Any] = field(default_factory=dict)
+    prompt: dict[str, Any] = field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "model": self.model,
@@ -155,11 +155,11 @@ class DecisionEvent(Event):
 
     type: EventType = EventType.DECISION
     chosen: str = ""
-    options_considered: List[str] = field(default_factory=list)
+    options_considered: list[str] = field(default_factory=list)
     rationale: str = ""
-    confidence: Optional[float] = None
+    confidence: float | None = None
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "chosen": self.chosen,
@@ -178,7 +178,7 @@ class ToolInvocationEvent(Event):
     succeeded: bool = True
     error: str = ""
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "tool_name": self.tool_name,
@@ -197,13 +197,13 @@ class RetrievedChunk:
     """
 
     source: str
-    score: Optional[float] = None
-    version: Optional[str] = None
-    timestamp: Optional[str] = None
-    content_hash: Optional[str] = None
+    score: float | None = None
+    version: str | None = None
+    timestamp: str | None = None
+    content_hash: str | None = None
     snippet: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "source": self.source,
             "score": self.score,
@@ -219,9 +219,9 @@ class RetrievalEvent(Event):
     type: EventType = EventType.RETRIEVAL
     query: str = ""
     knowledge_base: str = ""
-    chunks: List[RetrievedChunk] = field(default_factory=list)
+    chunks: list[RetrievedChunk] = field(default_factory=list)
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "query": self.query,
@@ -240,7 +240,7 @@ class HandoffEvent(Event):
     to_agent: str = ""
     reason: str = ""
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "from_agent": self.from_agent,
@@ -262,7 +262,7 @@ class PolicyEvent(Event):
     blocked: bool = False
     reason: str = ""
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "policy_name": self.policy_name,
@@ -278,7 +278,7 @@ class HumanReviewEvent(Event):
     verdict: str = ""
     comment: str = ""
 
-    def to_payload(self) -> Dict[str, Any]:
+    def to_payload(self) -> dict[str, Any]:
         return {
             **super().to_payload(),
             "reviewer": self.reviewer,

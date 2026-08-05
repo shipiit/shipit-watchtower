@@ -1,0 +1,46 @@
+# Tests on every pull request and every push to main.
+#
+# Separate from release.yml because it does a different job: this is fast
+# feedback while you are changing something, that is the gate in front of an
+# irreversible publication.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[dev,all]"
+      - run: ruff check shipit_watcher
+      - run: pytest shipit_watcher/tests -q --cov=shipit_watcher --cov-report=term-missing
+
+  # The package has to build on every change, not first at the tag. Broken
+  # metadata discovered on release day blocks the release.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*

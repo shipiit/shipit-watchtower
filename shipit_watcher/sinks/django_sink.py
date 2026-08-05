@@ -16,11 +16,12 @@ exactly the queries it exists to answer.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from datetime import UTC
+from typing import Any
 
 from ..config import get_config
 from ..context import TraceContext
-from ..events import Event, EventType, GenerationEvent
+from ..events import Event, EventType
 from ..masking import mask_payload
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class DjangoSink:
         return None
 
     def end_trace(self, trace_id: str, output: Any = None,
-                  metadata: Optional[Dict[str, Any]] = None) -> None:
+                  metadata: dict[str, Any] | None = None) -> None:
         return None
 
     def record(self, event: Event, context: TraceContext) -> None:
@@ -78,7 +79,7 @@ class DjangoSink:
 
     def _write_event(self, event: Event, context: TraceContext) -> None:
         """Persist one event as a node in the trace tree."""
-        from datetime import datetime, timezone as dt_timezone
+        from datetime import datetime
 
         from agent.models.trace_event import TraceEventRecord
 
@@ -99,7 +100,7 @@ class DjangoSink:
 
         started_at = None
         if event.started_at:
-            started_at = datetime.fromtimestamp(event.started_at, tz=dt_timezone.utc)
+            started_at = datetime.fromtimestamp(event.started_at, tz=UTC)
 
         TraceEventRecord.objects.create(
             trace_id=str(context.trace_id or "")[:64],

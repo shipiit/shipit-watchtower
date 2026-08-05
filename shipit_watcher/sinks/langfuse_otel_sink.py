@@ -40,7 +40,7 @@ import secrets
 import threading
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..config import get_config
 from ..context import TraceContext
@@ -48,7 +48,7 @@ from ..events import Event, EventType, GenerationEvent, Severity
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["LangfuseOTLPSink", "OBSERVATION_TYPES"]
+__all__ = ["OBSERVATION_TYPES", "LangfuseOTLPSink"]
 
 
 #: Watcher event type → Langfuse observation type.
@@ -57,7 +57,7 @@ __all__ = ["LangfuseOTLPSink", "OBSERVATION_TYPES"]
 #: names, so a retrieval recorded as a generic span is a node the graph cannot
 #: draw. Types Langfuse does not know fall back to ``span``, which degrades to
 #: today's behaviour rather than dropping the observation.
-OBSERVATION_TYPES: Dict[EventType, str] = {
+OBSERVATION_TYPES: dict[EventType, str] = {
     EventType.GENERATION: "generation",
     EventType.TOOL_INVOCATION: "tool",
     EventType.RETRIEVAL: "retriever",
@@ -84,7 +84,7 @@ _TRACE_ID_HEX = 32
 _SPAN_ID_HEX = 16
 
 
-def _hex_id(value: Optional[str], width: int) -> str:
+def _hex_id(value: str | None, width: int) -> str:
     """Coerce an id to a valid OTLP identifier of ``width`` hex characters.
 
     Watcher ids are already 32-char hex, so this is normally a slice. Ids
@@ -100,7 +100,7 @@ def _hex_id(value: Optional[str], width: int) -> str:
     return cleaned.rjust(width, "0")
 
 
-def _attr(key: str, value: Any) -> Dict[str, Any]:
+def _attr(key: str, value: Any) -> dict[str, Any]:
     """One OTLP attribute, typed by what the value actually is.
 
     Numbers stay numeric so Langfuse can aggregate cost and tokens without
@@ -126,7 +126,7 @@ class LangfuseOTLPSink:
     graph is never drawn from a half-delivered tree.
     """
 
-    def __init__(self, endpoint: Optional[str] = None, timeout: float = 5.0):
+    def __init__(self, endpoint: str | None = None, timeout: float = 5.0):
         config = get_config()
         host = (endpoint or config.langfuse_host or "").rstrip("/")
         self._endpoint = f"{host}/api/public/otel/v1/traces" if host else ""
@@ -137,8 +137,8 @@ class LangfuseOTLPSink:
             self._auth = base64.b64encode(raw.encode()).decode()
 
         self._lock = threading.Lock()
-        self._pending: Dict[str, List[Dict[str, Any]]] = {}
-        self._roots: Dict[str, Dict[str, Any]] = {}
+        self._pending: dict[str, list[dict[str, Any]]] = {}
+        self._roots: dict[str, dict[str, Any]] = {}
 
     @property
     def available(self) -> bool:
@@ -185,7 +185,7 @@ class LangfuseOTLPSink:
             )
 
     def end_trace(self, trace_id: str, output: Any = None,
-                  metadata: Optional[Dict[str, Any]] = None) -> None:
+                  metadata: dict[str, Any] | None = None) -> None:
         if not self.available:
             return
         with self._lock:
@@ -200,9 +200,9 @@ class LangfuseOTLPSink:
 
     # -- span construction ----------------------------------------------
 
-    def _build_root(self, trace_id: str, root: Dict[str, Any], output: Any,
-                    metadata: Optional[Dict[str, Any]],
-                    children: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_root(self, trace_id: str, root: dict[str, Any], output: Any,
+                    metadata: dict[str, Any] | None,
+                    children: list[dict[str, Any]]) -> dict[str, Any]:
         context: TraceContext = root["context"]
         config = get_config()
         attributes = list(root["attributes"])
@@ -261,7 +261,7 @@ class LangfuseOTLPSink:
         }
 
     def _build_span(self, event: Event, context: TraceContext,
-                    root_span_id: Optional[str] = None) -> Dict[str, Any]:
+                    root_span_id: str | None = None) -> dict[str, Any]:
         observation_type = OBSERVATION_TYPES.get(event.type, "span")
         attributes = [
             _attr("langfuse.observation.type", observation_type),
@@ -289,7 +289,7 @@ class LangfuseOTLPSink:
         start_ns = int(event.started_at * 1e9)
         end_ns = int((event.ended_at or event.started_at) * 1e9)
 
-        span: Dict[str, Any] = {
+        span: dict[str, Any] = {
             "traceId": _hex_id(context.trace_id, _TRACE_ID_HEX),
             "spanId": _hex_id(event.id, _SPAN_ID_HEX),
             "name": event.name,
@@ -310,7 +310,7 @@ class LangfuseOTLPSink:
         return span
 
     @staticmethod
-    def _generation_attributes(event: GenerationEvent) -> List[Dict[str, Any]]:
+    def _generation_attributes(event: GenerationEvent) -> list[dict[str, Any]]:
         """Model, usage and cost under the keys Langfuse aggregates on.
 
         ``gen_ai.*`` is the OpenTelemetry GenAI convention; the ``langfuse.*``
@@ -348,7 +348,7 @@ class LangfuseOTLPSink:
 
     # -- transport ------------------------------------------------------
 
-    def _send(self, trace_id: str, spans: List[Dict[str, Any]]) -> None:
+    def _send(self, trace_id: str, spans: list[dict[str, Any]]) -> None:
         config = get_config()
         payload = {
             "resourceSpans": [{

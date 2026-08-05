@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Optional
 
 __all__ = ["WatcherConfig", "configure", "get_config", "reset_config"]
 
@@ -103,6 +102,48 @@ class WatcherConfig:
         default_factory=lambda: os.getenv("WATCHER_GOVERNANCE", "audit")
     )
 
+    # ── Gateway (LiteLLM proxy) ──────────────────────────────────────
+    #: Forward attribution and prompt dimensions to a LiteLLM **proxy** in
+    #: ``extra_body.metadata``.
+    #:
+    #: ``existing_trace_id`` alone tells a server-side gateway which trace to
+    #: join, but nothing about *whose* call it was. A gateway that allocates
+    #: cost per cost centre, or refuses an unregistered prompt, has to read
+    #: those dimensions off the request — it cannot see the caller's
+    #: contextvars. Without this they must be re-attached by hand at every
+    #: call site that goes through a proxy, which is exactly the kind of
+    #: per-call-site duty that leaves attribution half-applied.
+    gateway_attribution: bool = field(
+        default_factory=lambda: _env_bool("WATCHER_GATEWAY_ATTRIBUTION", True)
+    )
+    #: Wire names the gateway expects, mapped from this SDK's vocabulary.
+    #: Overridable because "cost centre" is spelled differently in every
+    #: organisation, and the gateway is usually not ours to change.
+    gateway_key_map: dict = field(
+        default_factory=lambda: {
+            "system_id": "service_name",
+            "environment": "environment",
+            "mpk": "cost_center",
+            "client_id": "company_id",
+        }
+    )
+
+    #: Who writes the generation record when a proxy is in the path.
+    #:
+    #: ``app``     — this SDK does, and the gateway's server-side logging is
+    #:               expected to be off. Default; correct for a proxy you own.
+    #: ``gateway`` — the gateway does, and the SDK stays quiet about
+    #:               generations. For a proxy that logs server-side and cannot
+    #:               be silenced by a client: otherwise both record the same
+    #:               call — the duplicate this module exists to prevent, one
+    #:               layer further out.
+    #:
+    #: Application events (tools, decisions, retrievals) are emitted either
+    #: way; only the generation is contested.
+    generation_owner: str = field(
+        default_factory=lambda: os.getenv("WATCHER_GENERATION_OWNER", "app")
+    )
+
     # ── Langfuse transport ───────────────────────────────────────────
     # sdk  — the classic ingestion API via the Langfuse client. Works on any
     #        server version; every observation is a SPAN or a GENERATION.
@@ -133,7 +174,7 @@ class WatcherConfig:
         return self.enabled and (self.has_langfuse_credentials or self.persist_to_database)
 
 
-_config: Optional[WatcherConfig] = None
+_config: WatcherConfig | None = None
 
 
 def get_config() -> WatcherConfig:
