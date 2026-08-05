@@ -1,0 +1,86 @@
+# Publikacja na PyPI.
+#
+# Wydanie jest wyzwalane tagiem `vX.Y.Z` i nie może się odbyć bez zielonych
+# testów — publikacja to jedyna operacja tutaj, której nie da się cofnąć:
+# numeru wersji na PyPI nie wolno nadpisać, nawet po usunięciu pliku.
+# Dlatego build i testy są osobnym jobem, a publikacja zależy od nich.
+#
+# Uwierzytelnianie: Trusted Publishing (OIDC), bez tokenu w sekretach.
+# Konfiguracja jednorazowa na PyPI: Project → Publishing → Add a new publisher
+#   owner: shipiit, repo: shipit-watchtower, workflow: release.yml
+# Do czasu jej włączenia zadziała wariant z sekretem PYPI_API_TOKEN — patrz
+# zakomentowany blok na końcu.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Zbuduj i sprawdź, ale nie publikuj"
+        type: boolean
+        default: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev,all]"
+      - run: ruff check shipit_watcher
+      - run: pytest shipit_watcher/tests -q
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      # `twine check` łapie zepsuty README zanim trafi na stronę pakietu —
+      # tego akurat nie da się poprawić bez wydania nowej wersji.
+      - run: twine check dist/*
+      # Tag musi zgadzać się z wersją w pyproject. Rozjazd oznacza wydanie
+      # pod numerem, którego nikt nie zamierzał wydać.
+      - name: Zgodność tagu z wersją pakietu
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG pyproject=$PKG"
+          test "$TAG" = "$PKG" || { echo "::error::tag $TAG != wersja $PKG"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+      # Wariant zapasowy, gdyby Trusted Publishing nie był jeszcze włączony:
+      # - uses: pypa/gh-action-pypi-publish@release/v1
+      #   with:
+      #     password: ${{ secrets.PYPI_API_TOKEN }}
