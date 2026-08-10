@@ -94,6 +94,28 @@ class WatcherConfig:
         default_factory=lambda: _env_bool("WATCHER_PERSIST_ALL_EVENTS", False)
     )
 
+    #: Which model the Django sink writes to, as ``app_label.ModelName``.
+    #:
+    #: The sink used to import one hard-coded path, so the ledger only
+    #: worked in the application it was extracted from — any other Django
+    #: project got an ImportError swallowed by the sink's own except, and
+    #: therefore an empty ledger with a warning in the log. The default is
+    #: the original path, so existing deployments are unaffected.
+    ledger_model: str = field(
+        default_factory=lambda: os.getenv(
+            "WATCHER_LEDGER_MODEL", "agent.LLMCallRecord"
+        )
+    )
+
+    #: Where ``persist_all_events`` writes the trace tree. Same reasoning
+    #: as :attr:`ledger_model`, and separate because a project may want the
+    #: cost ledger without the full tree.
+    ledger_event_model: str = field(
+        default_factory=lambda: os.getenv(
+            "WATCHER_LEDGER_EVENT_MODEL", "agent.TraceEventRecord"
+        )
+    )
+
     # ── Governance (cost allocation) ─────────────────────────────────────
     # audit  — record everything, block nothing
     # warn   — record and flag unregistered prompts

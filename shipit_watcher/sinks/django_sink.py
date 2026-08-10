@@ -30,6 +30,29 @@ __all__ = ["DjangoSink"]
 
 
 
+def _ledger_model(label: str):
+    """Resolve ``app_label.ModelName`` to the model the ledger writes to.
+
+    Through ``apps.get_model`` rather than an import, because the app
+    label is the stable name — a project is free to move the module, and
+    Django already owns this lookup for exactly this reason.
+
+    A bad label raises, and the caller's ``except`` turns it into a
+    warning. That is deliberate: a misconfigured ledger must not take a
+    live agent run down with it. It is also why the warning names the
+    label — the previous version failed on a hard-coded import path and
+    said only that something went wrong.
+    """
+    from django.apps import apps
+
+    app_label, _, model_name = label.partition(".")
+    if not app_label or not model_name:
+        raise ValueError(
+            f"WATCHER_LEDGER_MODEL must be 'app_label.ModelName', got {label!r}"
+        )
+    return apps.get_model(app_label, model_name)
+
+
 def _as_pk(value):
     """Return *value* if it can be a UUID primary key, else None.
 
@@ -81,7 +104,7 @@ class DjangoSink:
         """Persist one event as a node in the trace tree."""
         from datetime import datetime
 
-        from agent.models.trace_event import TraceEventRecord
+        TraceEventRecord = _ledger_model(get_config().ledger_event_model)
 
         parent_event_id = event.parent_id or ""
         # Resolve the FK when the parent happens to be stored already. Children
@@ -126,9 +149,8 @@ class DjangoSink:
         )
 
     def _write(self, event: Event, context: TraceContext) -> None:
-        from agent.models.llm_call import LLMCallRecord
-
         config = get_config()
+        LLMCallRecord = _ledger_model(config.ledger_model)
         prompt = getattr(event, "prompt", {}) or {}
 
         metadata = dict(event.metadata)
@@ -185,7 +207,7 @@ class DjangoSink:
 
         Returns the number of rows linked.
         """
-        from agent.models.trace_event import TraceEventRecord
+        TraceEventRecord = _ledger_model(get_config().ledger_event_model)
 
         rows = list(TraceEventRecord.objects.filter(trace_id=trace_id))
         by_event_id = {r.event_id: r for r in rows}
