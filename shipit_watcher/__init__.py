@@ -117,7 +117,15 @@ from .tracer import (
     tool as tool,
 )
 
-__version__ = "1.4.2"
+# Read from the installed distribution rather than typed here: this said
+# 1.4.2 through two releases, so anything reporting the SDK version — a
+# trace attribute, a bug report — was wrong and confidently so.
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("shipit-watcher")
+except Exception:  # not installed (a source checkout on sys.path)
+    __version__ = "0.0.0+unknown"
 
 
 # NOTE: there is deliberately no module-level ``tracer()`` helper. Defining one
