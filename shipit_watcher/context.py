@@ -16,6 +16,8 @@ own view; a thread pool inherits a copy rather than racing.
 
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -108,6 +110,8 @@ class TraceContext:
 # In a library whose whole purpose is per-tenant attribution and masking, that
 # is the worst possible place for a leak. `current_context()` now hands back a
 # fresh context each time nothing is bound, so there is no shared dict to fill.
+logger = logging.getLogger(__name__)
+
 _context: ContextVar[TraceContext | None] = ContextVar(
     "shipit_watcher_context", default=None
 )
@@ -158,7 +162,30 @@ def bind(**fields: Any) -> Iterator[TraceContext]:
     try:
         yield updated
     finally:
-        _context.reset(token)
+        try:
+            _context.reset(token)
+        except ValueError:
+            # The token was created in a DIFFERENT contextvars Context than the
+            # one unwinding now, and `reset` refuses across Contexts.
+            #
+            # It happens whenever a generator that opened this block is closed
+            # by the garbage collector instead of by its own frame — an SSE
+            # response abandoned mid-stream is the usual way. The interpreter
+            # throws GeneratorExit into the `yield` from whatever Context the
+            # GC is running in, so `finally` executes somewhere `set()` never
+            # ran. Surfaced as three "Exception ignored in: <generator object
+            # Tracer.trace>" tracebacks per abandoned stream.
+            #
+            # Nothing needs undoing: the `set()` above only ever affected the
+            # Context that is already gone, and this one never held `updated`.
+            # Restoring `base` here would WRITE a value into a Context that
+            # never had ours — worse than doing nothing. So: do nothing, and
+            # say so at debug rather than tearing down a request over
+            # bookkeeping.
+            logger.debug(
+                "shipit-watcher: context token belonged to another Context; "
+                "nothing to restore", exc_info=True,
+            )
 
 
 @contextmanager
