@@ -146,9 +146,8 @@ def _call_name(kwargs: dict[str, Any]) -> str:
     """
     # LiteLLM relocates metadata into litellm_params on some paths, so both
     # are checked — a name the caller chose should not depend on which one.
-    for holder in (kwargs.get("metadata"),
-                   (kwargs.get("litellm_params") or {}).get("metadata")):
-        if isinstance(holder, dict) and holder.get("generation_name"):
+    for holder in _metadata_holders(kwargs):
+        if holder.get("generation_name"):
             return str(holder["generation_name"])
     call_type = str(kwargs.get("call_type", "") or "completion")
     return _CALL_NAMES.get(call_type, f"llm.{call_type}")
@@ -166,6 +165,7 @@ def _call_name(kwargs: dict[str, Any]) -> str:
 #: correct, and send it along with the request. LiteLLM passes ``metadata``
 #: through to the callback untouched, so it is a reliable envelope.
 _CONTEXT_KEY = "_watcher_context"
+_MANAGED_GENERATION_KEY = "_watcher_managed_generation"
 
 #: The litellm entry points wrapped to stamp the context.
 _WRAPPED_FUNCTIONS = ("completion", "acompletion", "embedding", "aembedding",
@@ -179,7 +179,10 @@ def _snapshot_context() -> dict[str, Any]:
     context = current_context()
     return {
         "trace_id": context.trace_id,
+        "root_span_id": context.root_span_id,
         "parent_id": context.parent_id,
+        "remote_parent_id": context.remote_parent_id,
+        "sampled": context.sampled,
         "user_id": context.user_id,
         "company_id": context.company_id,
         "session_id": context.session_id,
@@ -228,6 +231,7 @@ def _governance_payload(context: TraceContext) -> dict[str, Any]:
     sources = {
         "service_name": config.service_name,
         "environment": config.environment,
+        "project": config.project,
         "cost_center": context.cost_center,
         "company_id": context.company_id,
         "user_id": context.user_id,
@@ -299,7 +303,14 @@ def _stamp(kwargs: dict[str, Any]) -> dict[str, Any]:
     # Attribution and prompt identity ride the same envelope. A gateway that
     # allocates cost or enforces prompt governance reads them here; one that
     # does not simply ignores unknown keys.
-    for key, value in _governance_payload(context).items():
+    governance = _governance_payload(context)
+    explicit_prompt = metadata.get("watcher_prompt")
+    if isinstance(explicit_prompt, dict):
+        for key in _PROMPT_KEYS:
+            value = explicit_prompt.get(key)
+            if value not in (None, ""):
+                governance[key] = value if key == "prompt_registered" else str(value)
+    for key, value in governance.items():
         forwarded.setdefault(key, value)
 
     if forwarded:
@@ -329,6 +340,26 @@ def _wrap(func):
     return wrapper
 
 
+def _metadata_holders(kwargs: dict[str, Any]):
+    """Both places LiteLLM may keep a call's metadata.
+
+    It relocates ``metadata`` into ``litellm_params`` on some paths, so any
+    check that reads only one of them is right about half the time. Reading
+    one was how the managed-generation guard missed, and the same call got
+    recorded twice — by ``LLMClient`` and again by the global callback, into
+    the same trace, doubling tokens and cost in the ledger and every backend.
+    """
+    for holder in (kwargs.get("metadata"),
+                   (kwargs.get("litellm_params") or {}).get("metadata")):
+        if isinstance(holder, dict):
+            yield holder
+
+
+def _is_managed(kwargs: dict[str, Any]) -> bool:
+    """Whether ``LLMClient`` already owns and enriches this generation."""
+    return any(holder.get(_MANAGED_GENERATION_KEY) for holder in _metadata_holders(kwargs))
+
+
 def _context_from(kwargs: dict[str, Any]) -> TraceContext:
     """The context this call was made in — stamped, or ambient as a fallback.
 
@@ -336,12 +367,10 @@ def _context_from(kwargs: dict[str, Any]) -> TraceContext:
     callback runs inline and the two agree, but on the streaming path only the
     stamp is trustworthy.
     """
-    for holder in (kwargs.get("metadata"),
-                   (kwargs.get("litellm_params") or {}).get("metadata")):
-        if isinstance(holder, dict):
-            restored = _restore_context(holder.get(_CONTEXT_KEY))
-            if restored is not None:
-                return restored
+    for holder in _metadata_holders(kwargs):
+        restored = _restore_context(holder.get(_CONTEXT_KEY))
+        if restored is not None:
+            return restored
     return current_context()
 
 
@@ -372,6 +401,10 @@ class WatcherLiteLLMHandler:
     def _record(self, kwargs, response_obj, start_time, end_time, error) -> None:
         try:
             kwargs = kwargs if isinstance(kwargs, dict) else {}
+            if _is_managed(kwargs):
+                # LLMClient already owns and enriches this generation. The
+                # global LiteLLM callback must not emit the same call again.
+                return
             context = _context_from(kwargs)
             tracer = get_tracer()
 
@@ -416,7 +449,11 @@ class WatcherLiteLLMHandler:
             # is what makes attribution complete — a `litellm.completion` deep
             # inside a tool has no way to pass metadata, and without it that
             # call is indistinguishable from an unregistered prompt.
-            prompt_meta = (kwargs.get("metadata") or {}).get("watcher_prompt")
+            prompt_meta = next(
+                (holder["watcher_prompt"] for holder in _metadata_holders(kwargs)
+                 if isinstance(holder.get("watcher_prompt"), dict)),
+                None,
+            )
             if not isinstance(prompt_meta, dict):
                 prompt_meta = context.prompt
             if isinstance(prompt_meta, dict) and prompt_meta:
