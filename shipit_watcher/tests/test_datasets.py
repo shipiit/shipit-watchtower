@@ -100,7 +100,8 @@ class TestCapture:
         sent = client.created_items[0]
         assert sent["source_trace_id"] == "t" * 32
         assert sent["metadata"]["session_id"] == "s1"
-        assert sent["metadata"]["user_id"] == "a@b.com"
+        # Dataset capture crosses the same privacy boundary as trace export.
+        assert sent["metadata"]["user_id"] == "[EMAIL]"
 
     def test_capture_creates_the_dataset_on_first_use(self, client):
         ds.capture("brand-new", input="q")

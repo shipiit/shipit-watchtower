@@ -149,6 +149,36 @@ def observe_tool(tool_name: str | None = None, **metadata: Any) -> Callable[[F],
     def decorate(func: F) -> F:
         name = tool_name or getattr(func, "NAME", None) or func.__name__
 
+        if inspect.isasyncgenfunction(func):
+
+            @functools.wraps(func)
+            async def async_gen_wrapper(*args, **kwargs):
+                tracer = get_tracer()
+                payload = _capture_args(func, args, kwargs, True)
+                with tracer.tool(name, arguments=payload, **metadata) as event:
+                    count = 0
+                    async for item in func(*args, **kwargs):
+                        count += 1
+                        yield item
+                    event.output = {"yielded": count}
+
+            return async_gen_wrapper  # type: ignore[return-value]
+
+        if inspect.isgeneratorfunction(func):
+
+            @functools.wraps(func)
+            def gen_wrapper(*args, **kwargs):
+                tracer = get_tracer()
+                payload = _capture_args(func, args, kwargs, True)
+                with tracer.tool(name, arguments=payload, **metadata) as event:
+                    count = 0
+                    for item in func(*args, **kwargs):
+                        count += 1
+                        yield item
+                    event.output = {"yielded": count}
+
+            return gen_wrapper  # type: ignore[return-value]
+
         if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
@@ -185,6 +215,40 @@ def observe_agent(agent_name: str | None = None, **metadata: Any) -> Callable[[F
 
     def decorate(func: F) -> F:
         name = agent_name or func.__name__
+
+        if inspect.isasyncgenfunction(func):
+
+            @functools.wraps(func)
+            async def async_gen_wrapper(*args, **kwargs):
+                tracer = get_tracer()
+                payload = _capture_args(func, args, kwargs, True)
+                with tracer.trace(
+                    f"agent.{name}", input=payload, **metadata
+                ) as context:
+                    count = 0
+                    async for item in func(*args, **kwargs):
+                        count += 1
+                        yield item
+                    context.set_output({"yielded": count})
+
+            return async_gen_wrapper  # type: ignore[return-value]
+
+        if inspect.isgeneratorfunction(func):
+
+            @functools.wraps(func)
+            def gen_wrapper(*args, **kwargs):
+                tracer = get_tracer()
+                payload = _capture_args(func, args, kwargs, True)
+                with tracer.trace(
+                    f"agent.{name}", input=payload, **metadata
+                ) as context:
+                    count = 0
+                    for item in func(*args, **kwargs):
+                        count += 1
+                        yield item
+                    context.set_output({"yielded": count})
+
+            return gen_wrapper  # type: ignore[return-value]
 
         if inspect.iscoroutinefunction(func):
 

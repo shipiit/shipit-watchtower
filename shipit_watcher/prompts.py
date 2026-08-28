@@ -150,6 +150,19 @@ class PromptRegistry:
         if self._client is not None:
             return self._client
         config = get_config()
+        managed_backends = {"phoenix", "langsmith", "dashboard"}
+        if config.backends or config.resolved_management_backend in managed_backends:
+            try:
+                from .management import management_client
+
+                self._client = management_client()
+                return self._client
+            except Exception:
+                logger.warning(
+                    "watcher: %s prompt client unavailable",
+                    config.resolved_management_backend, exc_info=True,
+                )
+                return None
         if not config.has_langfuse_credentials:
             return None
         try:
@@ -255,6 +268,18 @@ class PromptRegistry:
             raw = client.get_prompt(name, **kwargs)
             template = getattr(raw, "prompt", None)
             if template is None:
+                template = getattr(raw, "template", None)
+            if template is None:
+                template = getattr(raw, "messages", None)
+            if template is None and hasattr(raw, "model_dump"):
+                dumped = raw.model_dump()
+                template = (
+                    dumped.get("prompt") or dumped.get("template")
+                    or dumped.get("messages")
+                )
+            if template is None and hasattr(raw, "pretty_repr"):
+                template = raw.pretty_repr()
+            if template is None:
                 return None
             # Chat prompts arrive as a message list; join for fingerprinting.
             if isinstance(template, list):
@@ -266,8 +291,14 @@ class PromptRegistry:
             return ManagedPrompt(
                 name=name,
                 template=str(template),
-                version=str(getattr(raw, "version", "") or "") or None,
-                labels=tuple(getattr(raw, "labels", ()) or ()),
+                version=str(
+                    getattr(raw, "version", None)
+                    or getattr(raw, "id", None) or ""
+                ) or None,
+                labels=tuple(
+                    getattr(raw, "labels", None)
+                    or getattr(raw, "tags", None) or ()
+                ),
                 config=dict(getattr(raw, "config", {}) or {}),
                 registered=True,
             )
@@ -313,8 +344,9 @@ class PromptRegistry:
         client = self._get_client()
         if client is None:
             raise RuntimeError(
-                "watcher: no Langfuse client — set LANGFUSE_PUBLIC_KEY, "
-                "LANGFUSE_SECRET_KEY and LANGFUSE_HOST before creating prompts."
+                "watcher: no prompt management backend — set LANGFUSE_PUBLIC_KEY "
+                "and LANGFUSE_SECRET_KEY, configure Phoenix or LangSmith, or set "
+                "WATCHER_DASHBOARD_URL"
             )
 
         is_chat = isinstance(template, list)

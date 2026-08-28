@@ -36,6 +36,7 @@ from typing import Any
 
 from .config import get_config
 from .context import current_context
+from .masking import mask_payload
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,13 @@ def agent_dataset_name(agent: Any, prefix: str = "") -> str:
 
 
 def _flush_traces(settle_seconds: float = 2.0) -> None:
-    """Ship buffered traces and give ingestion a moment to land them."""
+    """Ship buffered traces and give ingestion a moment to land them.
+
+    The sleep is a concession to asynchronous ingestion: a trace accepted over
+    OTLP is not queryable the instant the export returns, and linking a dataset
+    item to a trace the server has not indexed yet fails with a 404. It is a
+    settle time, not a guarantee — the link step below tolerates failure.
+    """
     import time
 
     from .tracer import get_tracer
@@ -113,11 +120,24 @@ def _flush_traces(settle_seconds: float = 2.0) -> None:
         get_tracer().flush()
     except Exception:
         logger.debug("watcher: flush before linking failed", exc_info=True)
-    time.sleep(settle_seconds)
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
 
 
 def _client() -> Any:
     config = get_config()
+    managed_backends = {"phoenix", "langsmith", "dashboard"}
+    if config.backends or config.resolved_management_backend in managed_backends:
+        try:
+            from .management import management_client
+
+            return management_client()
+        except Exception:
+            logger.warning(
+                "watcher: no %s client for datasets",
+                config.resolved_management_backend, exc_info=True,
+            )
+            return None
     if not config.has_langfuse_credentials:
         return None
     try:
@@ -144,6 +164,12 @@ def create_dataset(name: str, *, description: str = "",
     if client is None:
         return False
     try:
+        config = get_config()
+        if config.effective_content_policy == "none":
+            description, metadata = "", {}
+        elif config.effective_content_policy in {"metadata", "redacted"}:
+            description = mask_payload(description)
+            metadata = mask_payload(metadata or {})
         client.create_dataset(name=name, description=description or None,
                               metadata=metadata or {})
         return True
@@ -166,6 +192,15 @@ def add_item(dataset: str, *, input: Any = None, expected_output: Any = None,
     if client is None:
         return None
     try:
+        config = get_config()
+        policy = config.effective_content_policy
+        if policy in {"none", "metadata"}:
+            input = expected_output = None
+            metadata = {} if policy == "none" else mask_payload(metadata or {})
+        elif policy == "redacted":
+            input = mask_payload(input)
+            expected_output = mask_payload(expected_output)
+            metadata = mask_payload(metadata or {})
         payload: dict[str, Any] = {
             "dataset_name": dataset,
             "input": input,
@@ -323,7 +358,12 @@ def run_experiment(
 
         with tracer.trace(f"experiment.{run_name}", input=item.input,
                           tags=["experiment", f"run:{run_name}"],
-                          metadata={"dataset": dataset, "item_id": item_id}) as context:
+                          metadata={
+                              "dataset": dataset,
+                              "item_id": item_id,
+                              "run_name": run_name,
+                              "reference_example_id": item_id,
+                          }) as context:
             result.trace_id = context.trace_id or ""
             try:
                 result.output = task(item)
@@ -349,7 +389,10 @@ def run_experiment(
     # asynchronous — linking inline reliably 404s on a trace that is still in
     # flight. Flushing once and linking afterwards is both correct and one
     # round trip instead of N.
-    _flush_traces()
+    # Nothing to link means nothing to wait for: an empty or fully-filtered
+    # dataset used to cost a flat two seconds for no reason.
+    if pending:
+        _flush_traces()
     for raw, item_id, result in pending:
         if not result.trace_id:
             continue
