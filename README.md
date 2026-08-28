@@ -12,7 +12,7 @@ Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 [![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
 [![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 290 tests
+`Python 3.11+` · zero required dependencies · framework-agnostic · 418 tests
 
 ```bash
 pip install shipit-watcher
@@ -32,13 +32,16 @@ why it chose what it chose.
 
 - [The problem](#the-problem)
 - [Install](#install)
-- [Quick start](#quick-start)
+- [Quick start](#quick-start) — two lines
+- [Watcher dashboard](#watcher-dashboard--two-commands) — two commands
 - [Core concepts](#core-concepts)
 - [Prompt identity](#prompt-identity)
 - [Prompt registry](#prompt-registry)
 - [Agent graphs](#agent-graphs)
 - [Datasets and experiments](#datasets-and-experiments)
 - [PII masking](#pii-masking)
+- [Content guardrails](#content-guardrails)
+- [Cost for models nobody prices](#cost-for-models-nobody-prices)
 - [The event model](#the-event-model)
 - [Sinks](#sinks)
 - [The local ledger](#the-local-ledger)
@@ -78,42 +81,327 @@ then adds the dimensions that let a trace answer a business question.
 ## Install
 
 ```bash
-pip install shipit-watcher[all]     # langfuse + litellm + django
-pip install shipit-watcher          # core only, no dependencies
+pip install shipit-watcher            # core only, zero dependencies
+pip install shipit-watcher[all]       # + every backend and integration
 ```
 
 Every integration degrades to a no-op when its library is absent, so the core
-is safe to import anywhere.
+is safe to import anywhere — including in a library that cannot dictate its
+host application's dependencies.
 
 ---
 
 ## Quick start
 
+Two lines. Whatever model SDK the application already uses keeps working,
+and every call it makes is now recorded:
+
 ```python
 import shipit_watcher as wt
 
-wt.configure(service_name="my-app", environment="production")
-wt.instrument_litellm()          # one trace per call, not three
-
-with wt.trace("chat.request",
-              company_id=str(company.id),
-              user_id=str(user.id),
-              cost_center="support-ops"):
-
-    with wt.get_tracer().tool("list_orders") as tool:
-        tool.output = list_cars(company)
-
-    wt.get_tracer().decision(
-        "route.expert",
-        chosen="billing-analysis",
-        options=["billing-analysis", "customer-outreach"],
-        rationale="query mentions billing",
-        confidence=0.87,
-    )
+wt.setup(service_name="my-app", environment="production")
 ```
 
-Everything inside the block attaches to the trace automatically. Nothing needs
-a `trace_id` parameter threaded through it.
+That is the whole integration. `setup()` looks at what is installed and
+instruments it — **LiteLLM, the OpenAI SDK, the Anthropic SDK** — patching the
+SDKs' own classes, so a client constructed three layers down inside a
+dependency you do not control is covered too. It then detects which backends
+are configured from the environment, rebuilds any lazily-created sinks, and
+registers a flush at exit.
+
+```python
+client = OpenAI()                          # unchanged
+client.chat.completions.create(...)        # traced, costed, attributed
+```
+
+### Everything the agent did, not just the model call
+
+An LLM call on its own does not explain an answer. Wrap the turn, and the
+tools, retrievals and branch points inside it attach themselves:
+
+```python
+with wt.trace("chat.request", user_id=user.email, session_id=session.id,
+              company_id=str(company.id), cost_center="support-ops"):
+
+    with wt.tool("list_orders") as tool:              # → tool node
+        tool.output = list_orders(company)
+
+    wt.retrieval("kb.search", query=q, chunks=chunks)  # → retriever node
+
+    wt.decision("route.expert",                        # → the road not taken
+        chosen="billing-analysis",
+        options=["billing-analysis", "customer-outreach"],
+        rationale="query mentions billing")
+
+    answer = client.chat.completions.create(...)       # → generation
+```
+
+Nothing needs a `trace_id` threaded through it — the context propagates
+through `contextvars`, so it follows the logical flow of execution across
+`await` boundaries and into tasks.
+
+Or skip the `with` blocks entirely and decorate:
+
+```python
+@wt.observe_agent("planner")     # opens a root trace
+async def run_agent(query): ...
+
+@wt.observe_tool("search_docs")  # records a tool invocation
+def search_docs(q): ...
+```
+
+For a framework that owns the loop, hand it the graph:
+
+```python
+graph = wt.instrument_langgraph(graph)
+```
+
+### Pick your backend with environment variables
+
+Watcher does not have a backend of its own to sell you. Set the credentials
+for the vendor you already use — or several, and one canonical trace fans out
+to all of them with identical ids, prompt identity, tokens, cost and privacy
+policy:
+
+```bash
+# Langfuse
+LANGFUSE_PUBLIC_KEY=pk-lf-…
+LANGFUSE_SECRET_KEY=sk-lf-…
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+# Phoenix
+PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
+
+# LangSmith
+LANGSMITH_API_KEY=lsv2_…
+
+# Watcher's own dashboard
+WATCHER_DASHBOARD_URL=https://your-watcher.example
+WATCHER_DASHBOARD_TOKEN=the-dashboard-ingest-secret
+```
+
+No code changes between them. `FanOutSink` isolates each destination, so if
+Langfuse is unreachable the Phoenix export and the local ledger still happen.
+
+| You have | You get |
+|---|---|
+| LiteLLM | every completion, embedding and streamed call, once — not three times |
+| OpenAI SDK | chat completions, responses, embeddings, sync + async, streaming with time-to-first-token |
+| Anthropic SDK | messages and streams, with cache reads and cache writes priced apart |
+| LangGraph / LangChain | chains, agents, tools, retrievers, streaming, real parent/child run ids |
+| None of the above | `wt.trace`, `wt.tool`, `wt.generation` by hand — nothing is required |
+
+### Check it worked
+
+```bash
+watcher init      # print a safe environment template
+watcher connect   # send one trace and confirm it actually arrived
+watcher doctor    # validate the effective configuration
+watcher config    # non-secret effective settings
+```
+
+`connect` is the one to reach for. `doctor` reads configuration; `connect`
+exercises it — and the difference matters, because a token can be present,
+well-formed and *wrong*, which every configuration check calls healthy while
+the destination rejects every trace:
+
+```
+shipit-watcher
+  sending to    dashboard
+  instrumented  openai, litellm
+
+watcher: the Watcher dashboard rejected the trace: not authorised.
+Check the credentials on both sides match — WATCHER_DASHBOARD_TOKEN against
+the dashboard's own WATCHER_INGEST_KEY.
+```
+
+Both exit non-zero on failure, so either works as a container health check.
+
+`doctor()` returns the same report `setup()` does. Credentials are never
+included in it — configured backends are reported as booleans:
+
+```python
+report = wt.setup(service_name="my-app")
+print(report.instrumented)     # {'openai', 'litellm'}
+print(report.warnings)         # things that are wrong
+print(report.notes)            # deliberate choices worth stating out loud
+```
+
+`report.ok` is False until at least one backend is configured, so it is a
+readiness check for a deployment — not something to `assert` on in a quick
+start, where it would fail on a fresh install with an empty message.
+
+### Langfuse, Phoenix and LangSmith together
+
+Watcher can fan one canonical trace out to all three backends. Trace ids, root
+span ids, prompt identity, tokens, cost, tenant dimensions and privacy policy
+remain identical across every export:
+
+```bash
+# Langfuse
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+# Phoenix (local, self-hosted or cloud collector)
+PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
+PHOENIX_PROJECT_NAME=my-app
+PHOENIX_API_KEY=...
+
+# LangSmith
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=my-app
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+```
+
+Phoenix and LangSmith use OTLP/HTTP with OpenInference and OpenTelemetry GenAI
+attributes. Langfuse uses its Langfuse-specific OTLP mapping. Every backend is
+optional and imported lazily.
+
+For explicit construction or custom combinations:
+
+```python
+wt.setup(backends=(
+    wt.PhoenixBackend.from_env(),
+    wt.LangSmithBackend.from_env(),
+))
+```
+
+Tracing fans out, but prompts and datasets need one authoritative store. It is
+selected automatically (Langfuse → Phoenix → LangSmith), or explicitly:
+
+```bash
+WATCHER_MANAGEMENT_BACKEND=phoenix   # langfuse | phoenix | langsmith
+```
+
+The public calls stay the same: `get_prompt`, `create_prompt`, `capture`,
+`get_items` and `run_experiment` do not acquire vendor-specific call sites.
+
+### Watcher dashboard — two commands
+
+Watcher ships its own control plane, so "see my traces" does not require a
+vendor account:
+
+```bash
+cd dashboard
+npm run setup     # installs, generates an ingest secret, prints your env
+npm run dev       # http://localhost:5173
+```
+
+`setup` prints the two variables the application needs, already filled in:
+
+```bash
+WATCHER_DASHBOARD_URL=http://localhost:5173
+WATCHER_DASHBOARD_TOKEN=<the secret it generated>
+```
+
+Then `wt.setup(...)` as normal, and traces start arriving. **There is no
+migration step** — the D1 schema and its indexes create themselves on first
+access, so there is nothing to remember and nothing to run twice.
+
+To put it on Cloudflare:
+
+```bash
+npm run deploy    # creates the D1 database, uploads the secret, deploys
+```
+
+Both commands are idempotent — `deploy` is also the redeploy command, and
+`setup` reports the existing secret rather than rotating it, because a setup
+script that quietly invalidates a running deployment's credentials is worse
+than one you have to read twice.
+
+> **⚠️ The dashboard has no authentication yet.** Every page and read API is
+> open to anyone who can reach the URL, and trace bodies contain whatever your
+> prompts and completions contain. Run it on localhost, behind a VPN, or
+> behind Cloudflare Access until this lands.
+
+#### What it shows
+
+It stores the same privacy-sanitised canonical trace bundle sent to external
+vendors. The overview has real multi-series charts for trace volume, model
+cost, observation types, evaluator trends, user consumption and latency
+percentiles. The trace browser filters server-side on time, identity, context,
+metadata, model, provider, status, observation type, latency, tokens, cost and
+quality, with persisted column preferences, traces/observations tabs,
+pagination and JSON export.
+
+Opening a trace gives graph, timeline/Gantt and conversation views with a
+linked observation inspector for input, output, metadata, raw payload, token
+usage, cost, status and scores. Sessions, users, models, evaluations,
+policies, prompts, datasets and cost allocation read the same D1 database.
+Empty databases render honest empty states; the UI never inserts sample
+records.
+
+Delivery from the SDK is queued, bounded, retried with backoff, flushed at
+shutdown, and ordered so trace rows exist before the scores that reference
+them.
+
+### Cost budgets
+
+Budgets follow the current request context, so the same policy naturally
+applies to a tenant, agent, prompt, or cost centre without global mutable
+state:
+
+```python
+with wt.budget(
+    0.25,
+    action="fallback",
+    fallback_model="openai/gpt-4.1-mini",
+    tenant="acme",
+):
+    answer = client.complete(messages)
+```
+
+Use `action="warn"` for an observability-only rollout or `action="block"`
+for a hard pre-call gate. Provider-reported cost is charged automatically by
+`LLMClient`.
+
+### Portable replay bundles
+
+Attach a local bundle sink when reproducing a difficult trace. The universal
+content policy is applied before the bundle sees any data:
+
+```python
+bundle = wt.TraceBundleSink("failed-trace.json")
+tracer = wt.Tracer(sinks=[bundle])
+
+with tracer.trace("support.turn", input=question):
+    ...
+
+recording = wt.load_bundle("failed-trace.json")
+new_output = wt.replay_bundle(recording, replacement_task)
+```
+
+### Distributed traces
+
+Watcher uses W3C Trace Context across HTTP, queues and workers:
+
+```python
+# sender
+headers = wt.inject_trace_context()
+
+# receiver
+with wt.trace("worker.handle", **wt.extract_trace_context(request.headers)):
+    ...
+```
+
+The receiving service creates its own root span beneath the upstream span;
+local tools and generations remain children of the receiving service.
+
+### Content policy
+
+One policy applies before data reaches traces, scores, datasets or experiments:
+
+```python
+wt.setup(content_policy="redacted")
+```
+
+| Policy | Behavior |
+|---|---|
+| `none` | no caller content or metadata |
+| `metadata` | masked metadata; inputs, outputs and free text omitted |
+| `redacted` | masked content and metadata (default) |
+| `full` | full content; explicit trusted-environment opt-in |
 
 ### Decorators
 
@@ -452,36 +740,64 @@ renders as:
 | `wt.handoff(...)` | `agent` |
 | `wt.span(...)` | `span` — no graph node, by design |
 
-### Why a separate transport
+### LangGraph and LangChain callbacks
 
-Semantic types cannot be sent over the classic ingestion API. Offered one, a
-Langfuse v3 server replies:
+Use the callback adapter when a framework owns the execution loop. It records
+real parent/child run ids for chains and agents, chat/LLM generations,
+retrievers, tools, streaming first-token latency, token usage, errors, inputs,
+and outputs into the same canonical trace. LangGraph `thread_id` becomes the
+vendor-neutral session id; common user, tenant, channel, tag, node, and step
+metadata is preserved across every destination.
+
+```python
+import shipit_watcher as wt
+
+wt.setup(service_name="research-agent", environment="production")
+graph = wt.instrument_langgraph(graph)
+
+result = graph.invoke(
+    {"messages": messages},
+    config={
+        "configurable": {"thread_id": session_id},
+        "metadata": {"user_id": user_id, "company_id": company_id},
+    },
+)
+```
+
+No surrounding `wt.trace(...)` block is required: the adapter owns the root
+trace lifecycle and closes it with the graph output or error. If the graph is
+already inside a Watcher trace, it reuses that trace instead of creating a
+duplicate. For per-call attachment, pass `wt.langgraph_callback()` in
+LangChain's `callbacks` config. The adapter imports LangChain lazily, so
+applications that do not use LangGraph do not acquire the dependency.
+
+### Why OTLP is the default
+
+Semantic types cannot be sent over Langfuse's legacy ingestion API. Offered
+one, a Langfuse v3 server replies:
 
 ```
 "Invalid option: expected one of \"GENERATION\"|\"SPAN\"|\"EVENT\""
 ```
 
-They exist only over OTLP, as the span attribute
-`langfuse.observation.type`. The Langfuse Python SDK exposes this as `as_type=`
-from **3.3.1** — but v3 also removed `client.trace()`, which most existing
-integrations call. So this sink speaks OTLP directly over plain HTTP, with no
-OpenTelemetry dependency and no SDK upgrade: only the *server* has to be v3.
+They exist over OTLP as the span attribute `langfuse.observation.type`.
+Watcher therefore speaks OTLP directly over HTTP, without requiring an
+OpenTelemetry SDK in your application.
 
 Requirements: a Langfuse server ≥ 3.x. Check yours with
 `curl $LANGFUSE_HOST/api/public/health`.
 
 ### `sdk` vs `otlp`
 
-| | `sdk` (default) | `otlp` |
+| | `otlp` (default) | `sdk` (legacy compatibility) |
 |---|---|---|
-| Server needed | any | v3+ |
-| Agent graph | ✗ | ✓ |
-| Observation types | span / generation | all ten |
-| Delivery | Langfuse client's own batching | one request per finished trace |
+| Agent graph | ✓ | ✗ |
+| Observation types | all ten | span / generation |
+| Dependency | direct HTTP | Langfuse client |
 
-Both carry user, session, tags, tokens, cost and prompt version. The only
-difference is the graph — so `sdk` stays the default, and `otlp` is a
-one-variable upgrade when your server supports it.
+Both carry user, session, tags, tokens, cost and prompt version. Set
+`WATCHER_LANGFUSE_TRANSPORT=sdk` only while migrating an older self-hosted
+installation.
 
 ---
 
@@ -571,6 +887,61 @@ policy = wt.MaskingPolicy(enabled_rules=frozenset({"EMAIL"}))   # relax explicit
 
 ---
 
+## Content guardrails
+
+Masking protects the *trace*: the prompt still reaches the model, and the
+recorded copy is redacted. A guardrail protects the *call* — the content never
+leaves the process at all.
+
+```bash
+WATCHER_GUARDRAIL=audit     # off (default) | audit | block
+```
+
+```python
+wt.guard(outbound_email_body)      # explicit block, whatever the mode
+```
+
+In `block` mode a call carrying a validated identifier raises
+`GuardrailViolation` before the request is made; in `audit` it records a
+`PolicyEvent` and allows it. Run `audit` first — against real traffic it
+answers "what would this have refused?", which is the only honest way to find
+out whether `block` is safe to turn on.
+
+The detectors are the checksum-validated ones from
+[PII masking](#pii-masking), and that is the point. A guardrail built on bare
+patterns fires on every ten-digit number in a business database and gets
+switched off within a week. One that validates the check digit fires when a
+national ID is genuinely about to leave the building.
+
+---
+
+## Cost for models nobody prices
+
+Cost is taken from the provider or gateway when they report one — they know
+the contract you are billed under. When they do not, and LiteLLM's pricing map
+has never heard of the model either, Watcher prices it from a small built-in
+table:
+
+```python
+wt.set_model_price("acme-internal-7b", input=0.0, output=0.0)
+```
+
+```bash
+WATCHER_MODEL_PRICES='{"my-finetune": {"input": 3.0, "output": 15.0}}'
+```
+
+Prices are USD per million tokens. Cached input is billed separately where a
+provider offers it, so an Anthropic call that reads 900 cached tokens is not
+charged as 900 fresh ones — roughly a tenfold difference on a long system
+prompt.
+
+An unknown model reports **no** cost rather than a guessed one. A zero that
+means "we decline to guess" and a zero that means "this genuinely cost
+nothing" are different facts, and only one of them should be trusted in a
+report — which is why a local model is worth declaring explicitly.
+
+---
+
 ## The event model
 
 Typed, because a decision path cannot be rendered from `span(name="something")`.
@@ -605,7 +976,12 @@ tracer.retrieval("kb.policy", query="fuel policy",
 
 | Sink | Purpose |
 |---|---|
-| `LangfuseSink` | analysis surface — supports both v2 and v3 client shapes |
+| `LangfuseOTLPSink` | Langfuse semantic observations and agent graphs |
+| `PhoenixOTLPSink` | Phoenix/OpenInference traces |
+| `LangSmithOTLPSink` | LangSmith OpenTelemetry traces |
+| `DashboardSink` | queued delivery to the Watcher D1 control plane |
+| `OpenInferenceOTLPSink` | the shared OTLP transport under Phoenix and LangSmith |
+| `LangfuseSink` | legacy Langfuse SDK compatibility |
 | `DjangoSink` | the local ledger — retention, cost-centre reporting, your boundary |
 | `ConsoleSink` | development |
 
@@ -684,7 +1060,7 @@ is off by default. Enable it for the systems under audit.
 Because generations land in your own table, the reports are SQL:
 
 ```python
-# Spend per cost centre cost centre
+# Spend per cost centre
 LLMCallRecord.objects.values('cost_center').annotate(
     calls=Count('id'), tokens=Sum('total_tokens'), cost=Sum('total_cost'))
 
@@ -724,18 +1100,38 @@ Everything below has a working default. Nothing else is required to start.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WATCHER_LANGFUSE_TRANSPORT` | `sdk` | `otlp` for the [agent graph](#agent-graphs) |
+| `WATCHER_LANGFUSE_TRANSPORT` | `otlp` | `sdk` only for legacy compatibility |
 | `WATCHER_DATASET` | – | default dataset, or prefix for [`agent_dataset_name()`](#datasets-and-experiments) |
 | `WATCHER_SERVICE` | `unknown-service` | tags every trace |
+| `WATCHER_PROJECT` | `default` | the tenancy scope reported to the dashboard |
+| `WATCHER_RELEASE` | – | release/version tag carried on every trace |
 | `WATCHER_ENV` | `development` | environment |
 | `WATCHER_ENABLED` | `true` | master switch |
 | `WATCHER_MASK_PII` | `true` | redact before persistence |
 | `WATCHER_CAPTURE_CONTENT` | `true` | `false` = metrics-only traces |
+| `WATCHER_CONTENT_POLICY` | `redacted` | `none` / `metadata` / `redacted` / `full` |
 | `WATCHER_SAMPLE_RATE` | `1.0` | fraction of traces kept |
+| `WATCHER_SLOW_TRACE_MS` | `0` | tail-retain traces at/above threshold; `0` disables |
+| `WATCHER_EXPENSIVE_TRACE_USD` | `0` | tail-retain costly traces; `0` disables |
+| `WATCHER_TAIL_BUFFER_MAX_EVENTS` | `1000` | bounded events held for a sampled-out trace |
+| `WATCHER_EXPORTER_ASYNC` | `true` | non-blocking OTLP delivery |
+| `WATCHER_EXPORTER_QUEUE_SIZE` | `256` | bounded traces waiting per exporter |
+| `WATCHER_EXPORTER_MAX_RETRIES` | `3` | exponential-backoff delivery attempts |
+| `WATCHER_DASHBOARD_URL` | — | Watcher dashboard origin; enables its trace sink |
+| `WATCHER_DASHBOARD_TOKEN` | — | bearer token matching the dashboard's `WATCHER_INGEST_KEY` |
 | `WATCHER_PERSIST_DB` | `false` | enable the local ledger |
 | `WATCHER_PERSIST_ALL_EVENTS` | `false` | persist the whole tree |
 | `WATCHER_GOVERNANCE` | `audit` | `audit` / `warn` / `enforce` |
+| `WATCHER_GUARDRAIL` | `off` | `off` / `audit` / `block` — refuse content carrying an identifier |
+| `WATCHER_GUARDRAIL_RULES` | – | narrow the guardrail, e.g. `PESEL,NIP,IBAN` |
+| `WATCHER_MODEL_PRICES` | – | JSON price overrides, USD per million tokens |
+| `WATCHER_LEDGER_MODEL` | `agent.LLMCallRecord` | the cost-ledger model, as `app_label.ModelName` |
+| `WATCHER_LEDGER_EVENT_MODEL` | `agent.TraceEventRecord` | where `persist_all_events` writes the tree |
+| `WATCHER_TAIL_BUFFER_MAX_TRACES` | `500` | how many sampled-out traces may buffer at once |
 | `LANGFUSE_PUBLIC_KEY`<br>`LANGFUSE_SECRET_KEY`<br>`LANGFUSE_HOST` | — | Langfuse |
+| `PHOENIX_COLLECTOR_ENDPOINT`<br>`PHOENIX_BASE_URL`<br>`PHOENIX_API_KEY`<br>`PHOENIX_PROJECT_NAME` | — | Phoenix OTLP |
+| `LANGSMITH_API_KEY`<br>`LANGSMITH_ENDPOINT`<br>`LANGSMITH_OTEL_ENDPOINT`<br>`LANGSMITH_PROJECT` | — | LangSmith OTLP (falls back to `LANGCHAIN_PROJECT`) |
+| `WATCHER_MANAGEMENT_BACKEND` | auto | authoritative prompt/dataset backend |
 
 ---
 
@@ -756,10 +1152,10 @@ Everything below has a working default. Nothing else is required to start.
                ▼
     ┌──────────────────────┐
     │     FanOutSink       │  ← failures isolated per sink
-    └───┬──────────┬───────┘
-        ▼          ▼
-   Langfuse    your database
-   (analysis)  (system of record)
+    └───┬──────────┬──────────┬───────────┘
+        ▼          ▼          ▼           ▼
+   Langfuse     Phoenix   LangSmith   Watcher D1
+   analysis     analysis  analysis    system of record
 ```
 
 LiteLLM calls report into the **ambient trace** rather than opening their own,
@@ -789,7 +1185,10 @@ which is what removes the duplicates.
 pytest shipit_watcher/tests -q --cov=shipit_watcher --cov-report=term-missing
 ```
 
-**148 tests · 90% coverage.**
+**418 tests**, and CI runs them across Python 3.11–3.14 alongside `ruff`,
+`mypy`, and a coverage floor. A second job lints, type-checks and
+production-builds the dashboard, because a claim about quality that nothing
+enforces decays into a claim about somebody's afternoon.
 
 The negative cases carry as much weight as the positive ones. Over-masking
 destroys the data traces exist to explain, so *"an odometer reading survives
@@ -812,12 +1211,15 @@ Bugs the suite caught during development, rather than assumptions that shipped:
 # settings.py or AppConfig.ready()
 import shipit_watcher as wt
 
-wt.configure(
+report = wt.setup(
     service_name="my-app",
     environment=os.getenv("ENV", "development"),
-    persist_to_database=True,
 )
-wt.instrument_litellm()
+if not report.ok:
+    # `ok` requires at least one *configured* backend, so this is a real
+    # readiness check — and a fresh install fails it deliberately, rather
+    # than starting up and quietly recording nothing.
+    logger.warning("watcher: %s", report.warnings or "no backend configured")
 ```
 
 Then wrap your entry point:
@@ -844,16 +1246,27 @@ Honest status, so nobody discovers a gap in production.
 |---|---|
 | Filter by service, model, user, prompt, date, cost centre | ✅ |
 | Prompt identity on every call | ✅ |
-| Compliance gap report (which calls used an unregistered prompt) | ✅ |
+| Compliance gap report (which calls used an unregistered prompt) | ⚠️ the data is there — `prompt_registered` on every generation — but the report is a query you write |
 | Refuse unregistered prompts (`governance=enforce`) | ✅ blocks pre-call |
-| Agent graphs (typed observations over OTLP) | ✅ needs a Langfuse v3 server |
+| Agent graphs (typed observations over OTLP) | ✅ Langfuse, Phoenix, LangSmith, Watcher UI |
+| LangGraph / LangChain callback capture | ✅ automatic root trace, sessions/users, chains, agents, chat/LLMs, streaming, tools, retrievers, parents, usage, errors |
 | Prompt registry: fetch, publish, per-agent keys, stale fallback | ✅ |
-| Event model with retrieval provenance and decision paths | ✅ data model — bring your own UI |
+| Event model with retrieval provenance and decision paths | ✅ SDK + full Watcher trace UI |
 | Cost-centre tagging and allocation | ✅ tagging; hierarchies and rules stay yours |
-| Budgets and alert ladders | ❌ not started |
+| Cost budgets that block or downgrade a call pre-request | ✅ `warn` / `fallback` / `block`, scoped to the request context |
+| Alerting, monitors, notification channels | ❌ not built — no thresholds, no webhooks, no schedule |
 | PII masking before persistence | ✅ |
 | LLM-as-a-judge scoring | ✅ |
 | Langfuse datasets / experiment runs | ✅ |
+| Watcher dashboard | ✅ real D1 data, advanced filters, charts, graph/timeline/messages, session replay, user analytics, evaluation coverage |
+| Content guardrails (refuse a call carrying a national ID) | ✅ `WATCHER_GUARDRAIL=audit\|block`, checksum-validated |
+| Auto-instrumentation of OpenAI and Anthropic SDKs | ✅ patched at class level, streaming included |
+| Model price table for models nobody prices | ✅ `wt.set_model_price()` / `WATCHER_MODEL_PRICES` |
+| Dashboard authentication and multi-tenancy | ❌ not built — run it behind your own access control today |
+| OTLP *ingest* into the Watcher dashboard | ❌ not built — it accepts `watcher.trace.v1` only |
+| Online evaluation on live traffic, human annotation UI | ❌ not built — evaluators run where you call them |
+| Retention / TTL / deletion API | ❌ not built — the D1 database grows until you prune it |
+| Non-Python SDK | ❌ not built |
 
 ---
 
@@ -870,7 +1283,7 @@ LANGFUSE_SECRET_KEY=sk-lf-…
 LANGFUSE_HOST=https://langfuse.your-company.com   # not optional when self-hosting
 
 WATCHER_ENV=production
-WATCHER_LANGFUSE_TRANSPORT=otlp     # agent graphs; needs a Langfuse v3 server
+WATCHER_LANGFUSE_TRANSPORT=otlp     # default; preserves the full agent graph
 WATCHER_PERSIST_DB=true             # the local ledger
 WATCHER_DATASET=myapp-eval          # prefix for per-agent capture datasets
 WATCHER_GOVERNANCE=audit            # warn / enforce once prompts are registered
