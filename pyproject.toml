@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "shipit-watcher"
 version = "1.5.1"
-description = "Observability for LLM applications: tracing, agent graphs, prompt registry and governance, cost allocation, and PII masking. Works with Langfuse, LiteLLM and any Python stack."
+description = "Vendor-neutral AI observability, governance, evaluation, and cost control for Langfuse, Phoenix, LangSmith, LiteLLM, and any Python stack."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Rahul Raj" }]
-keywords = ["llm", "observability", "langfuse", "litellm", "tracing", "governance"]
+keywords = ["llm", "observability", "langfuse", "phoenix", "langsmith", "litellm", "tracing", "governance"]
 
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -22,6 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
 
@@ -29,6 +30,9 @@ classifiers = [
 # including ones that ship neither Langfuse nor LiteLLM. Backends are extras,
 # and every integration degrades to a no-op when its library is absent.
 dependencies = []
+
+[project.scripts]
+watcher = "shipit_watcher.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/shipiit/shipit-watchtower"
@@ -41,7 +45,16 @@ Changelog = "https://github.com/shipiit/shipit-watchtower/releases"
 langfuse = ["langfuse>=2.0"]
 litellm = ["litellm>=1.40"]
 django = ["django>=4.2"]
-all = ["langfuse>=2.0", "litellm>=1.40", "django>=4.2"]
+phoenix = ["arize-phoenix-client>=1.0"]
+langsmith = ["langsmith>=0.3", "langchain-core>=0.3"]
+langgraph = ["langgraph>=0.2", "langchain-core>=0.3"]
+# Not used by this package — every OTLP sink here speaks the wire format over
+# stdlib urllib, precisely so an application does not need an OTel SDK. Kept
+# for deployments that run their own OpenTelemetry stack alongside Watcher.
+otel = ["opentelemetry-api>=1.27", "opentelemetry-sdk>=1.27"]
+# Self-referencing so a version floor is raised in exactly one place. The
+# hand-written duplicate had already drifted — it silently omitted `otel`.
+all = ["shipit-watcher[langfuse,litellm,django,phoenix,langsmith,langgraph]"]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
@@ -52,6 +65,27 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["shipit_watcher"]
+# The classifier claims `Typing :: Typed`; this is what makes it true. Without
+# the marker, consumers get no type information at all from a fully annotated
+# package.
+artifacts = ["shipit_watcher/py.typed"]
+
+[tool.hatch.build.targets.sdist]
+# An sdist is for building the wheel, and nothing here is needed for that.
+# `hero.png` alone is 1.3 MB, and `dashboard/` plus `uv.lock` would push a
+# fresh sdist past 3 MB of payload nobody installing the package can use.
+exclude = [
+  "/dashboard",
+  "/dist",
+  "/.github",
+  "/hero.png",
+  "/banner.svg",
+  "/uv.lock",
+  "/.coverage",
+  "/.claude",
+  "/shipit_watcher/tests",
+  "/shipit_watcher/banner.svg",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
