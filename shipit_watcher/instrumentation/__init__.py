@@ -1,3 +1,3 @@
 """Auto-instrumentation for third-party libraries."""
 
-__all__ = ["litellm"]
+__all__ = ["langgraph", "litellm"]
