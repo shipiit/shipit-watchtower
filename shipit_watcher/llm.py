@@ -32,7 +32,9 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from .budgets import charge_budget, check_budget
 from .config import get_config
+from .context import current_context
 from .events import Severity
 from .identity import PromptIdentity
 from .tracer import get_tracer
@@ -66,6 +68,8 @@ class LLMResponse:
     completion_tokens: int = 0
     total_cost: float = 0.0
     latency_ms: int = 0
+    #: Time to first token, for streamed responses. `None` when not streamed.
+    time_to_first_token_ms: int | None = None
     finish_reason: str = ""
     #: The provider's raw response, for callers that need tool_calls etc.
     raw: Any = None
@@ -205,12 +209,16 @@ class LLMClient:
         if mode == "audit":
             return
 
-        registered = bool(prompt and prompt.registered)
+        ambient = current_context().prompt if prompt is None else {}
+        registered = bool(
+            prompt.registered if prompt is not None
+            else ambient.get("prompt_registered", False)
+        )
         if registered:
             return
 
         tracer = get_tracer()
-        name = prompt.name if prompt else "<none>"
+        name = prompt.name if prompt else str(ambient.get("prompt_name") or "<none>")
         if mode == "enforce":
             tracer.policy("prompt_registry", blocked=True,
                           reason=f"prompt {name!r} is not registered")
@@ -284,7 +292,9 @@ class LLMClient:
         tracer = get_tracer()
         last_error: Exception | None = None
 
-        for model in self._models_to_try():
+        budget_model = check_budget()
+        models = [budget_model] if budget_model else self._models_to_try()
+        for model in models:
             for attempt in range(self.max_retries + 1):
                 started = time.time()
                 with tracer.generation(
@@ -294,8 +304,14 @@ class LLMClient:
                     is_fallback=model != self.model,
                 ) as generation:
                     try:
+                        call_overrides = dict(overrides)
+                        metadata = dict(call_overrides.get("metadata") or {})
+                        metadata["_watcher_managed_generation"] = True
+                        if prompt is not None:
+                            metadata["watcher_prompt"] = prompt.as_metadata()
+                        call_overrides["metadata"] = metadata
                         raw = litellm.completion(
-                            **self._build_kwargs(messages, model, dict(overrides))
+                            **self._build_kwargs(messages, model, call_overrides)
                         )
                     except Exception as exc:  # provider error
                         last_error = exc
@@ -314,6 +330,7 @@ class LLMClient:
                     generation.completion_tokens = completion_tokens
                     generation.total_cost = _extract_cost(raw)
                     generation.output = text or {"tool_calls": tool_calls}
+                    charge_budget(generation.total_cost)
 
                     return LLMResponse(
                         text=text, model=model, provider=self.provider or "",
@@ -350,22 +367,33 @@ class LLMClient:
         self._check_governance(prompt)
         tracer = get_tracer()
 
-        kwargs = self._build_kwargs(messages, self.model, dict(overrides))
+        model = check_budget() or self.model
+        kwargs = self._build_kwargs(messages, model, dict(overrides))
+        metadata = dict(kwargs.get("metadata") or {})
+        metadata["_watcher_managed_generation"] = True
+        if prompt is not None:
+            metadata["watcher_prompt"] = prompt.as_metadata()
+        kwargs["metadata"] = metadata
         kwargs["stream"] = True
         kwargs.setdefault("stream_options", {"include_usage": True})
 
         started = time.time()
         with tracer.generation(
-            name, model=self.model, provider=self.provider or "",
+            name, model=model, provider=self.provider or "",
             prompt=prompt, input=messages, streaming=True,
         ) as generation:
             collected: list[str] = []
             prompt_tokens = completion_tokens = 0
+            response_cost = 0.0
 
+            first_token_at: float | None = None
             for chunk in litellm.completion(**kwargs):
+                if first_token_at is None:
+                    first_token_at = time.time()
                 usage = getattr(chunk, "usage", None)
                 if usage:
                     prompt_tokens, completion_tokens = _extract_usage(chunk)
+                    response_cost = max(response_cost, _extract_cost(chunk))
 
                 choices = getattr(chunk, "choices", None)
                 if not choices:
@@ -379,9 +407,18 @@ class LLMClient:
             text = "".join(collected)
             generation.prompt_tokens = prompt_tokens
             generation.completion_tokens = completion_tokens
+            generation.total_cost = response_cost
             generation.output = text
             generation.metadata["latency_ms"] = int((time.time() - started) * 1000)
             generation.metadata["chunks"] = len(collected)
+            if first_token_at is not None:
+                # For a streamed answer this is the latency a user actually
+                # feels; total duration mostly measures how long the answer
+                # was, which is a property of the question.
+                generation.metadata["time_to_first_token_ms"] = int(
+                    (first_token_at - started) * 1000
+                )
+            charge_budget(response_cost)
 
 
 # ── Module-level convenience ─────────────────────────────────────────────
