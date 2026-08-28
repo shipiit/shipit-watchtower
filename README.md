@@ -33,6 +33,8 @@ why it chose what it chose.
 - [The problem](#the-problem)
 - [Install](#install)
 - [Quick start](#quick-start) — two lines
+- [Set up for your stack](#set-up-for-your-stack) — OpenAI, Anthropic, LiteLLM, LangGraph
+- [Track everything](#track-everything-not-just-the-model-call) — tools, retrievals, decisions
 - [Watcher dashboard](#watcher-dashboard--two-commands) — two commands
 - [Core concepts](#core-concepts)
 - [Prompt identity](#prompt-identity)
@@ -419,6 +421,260 @@ def summarise(text: str): ...
 Sync, async, generators and async generators are all handled. Generators are
 consumed *inside* the span — a decorator that returned the generator object
 unconsumed would record a 0 ms span and never see the real work or its errors.
+
+---
+
+## Set up for your stack
+
+Every example below is complete. Pick the one that matches what you already
+use — the rest of the page is detail you can reach for later.
+
+The one line they all share:
+
+```python
+import shipit_watcher as wt
+
+wt.setup(service_name="my-app", environment="production")
+```
+
+`setup()` looks at what is installed and instruments it. Nothing else in the
+application changes.
+
+### OpenAI SDK
+
+```python
+from openai import OpenAI
+import shipit_watcher as wt
+
+wt.setup(service_name="my-app")
+client = OpenAI()
+
+# Traced, costed and attributed. No wrapper, no decorator.
+client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "How many orders are open?"}],
+)
+```
+
+Covers `chat.completions`, `responses` and `embeddings`, sync and async. The
+patch goes on the SDK's own classes, so a client constructed inside a library
+you do not control is covered too.
+
+Streaming keeps the span open for the whole stream and records
+time-to-first-token — for a streamed answer that is the latency a user
+actually feels:
+
+```python
+stream = client.chat.completions.create(model="gpt-4o", messages=[...], stream=True)
+for chunk in stream:
+    ...
+```
+
+### Anthropic SDK
+
+```python
+import anthropic
+import shipit_watcher as wt
+
+wt.setup(service_name="my-app")
+client = anthropic.Anthropic()
+
+client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    system="You are a support assistant.",
+    messages=[{"role": "user", "content": "Why was invoice 4471 rejected?"}],
+)
+
+# `messages.stream()` is covered too — the manager is left intact and what it
+# yields is what gets traced.
+with client.messages.stream(model="claude-sonnet-4-5", max_tokens=1024,
+                            messages=[...]) as stream:
+    for text in stream.text_stream:
+        ...
+```
+
+Cache reads are billed at roughly a tenth of input and cache writes at a
+premium, so the two are priced apart rather than lumped into one number.
+
+### LiteLLM
+
+```python
+import litellm
+import shipit_watcher as wt
+
+wt.setup(service_name="my-app")
+
+litellm.completion(model="gpt-4o", messages=[...])     # once, not three times
+```
+
+> **⚠️ Do not run both.** `setup()` removes LiteLLM's own Langfuse callback,
+> because keeping it means the same call is traced twice — flat, unparented,
+> with no tenant and no prompt identity. To keep LiteLLM's native tracing
+> instead, call `wt.setup(instrument_litellm=False)` and do not create
+> application traces.
+
+### LangChain and LangGraph
+
+```python
+import shipit_watcher as wt
+
+wt.setup(service_name="research-agent")
+graph = wt.instrument_langgraph(graph)
+
+result = graph.invoke(
+    {"messages": messages},
+    config={
+        "configurable": {"thread_id": session_id},
+        "metadata": {"user_id": user_id, "company_id": company_id},
+    },
+)
+```
+
+No surrounding `wt.trace(...)` needed — the adapter owns the root trace and
+closes it with the graph's output or its error. Already inside a Watcher
+trace, it reuses that one instead of opening a duplicate. LangGraph's
+`thread_id` becomes the session id.
+
+For per-call attachment, pass `wt.langgraph_callback()` in LangChain's
+`callbacks` config.
+
+### No framework at all
+
+Nothing here requires a model SDK. Record the work directly:
+
+```python
+with wt.trace("chat.request", user_id=user.email, session_id=session.id):
+    with wt.tool("list_orders") as tool:
+        tool.output = list_orders(company)
+
+    with wt.get_tracer().generation("llm.answer", model="my-local-model") as gen:
+        gen.prompt_tokens, gen.completion_tokens = 420, 96
+        gen.output = answer
+```
+
+A model nobody prices reports **no** cost rather than a guessed one, so say
+what it costs — an asserted zero and an unknown are different facts:
+
+```python
+wt.set_model_price("acme-internal-7b", input=0.0, output=0.0)
+```
+
+### Where `setup()` goes
+
+Once, at startup — not per request, and not beside the first model call. A
+background worker that reaches the provider directly would otherwise run
+uninstrumented and its calls would go unrecorded.
+
+```python
+# Django — myapp/apps.py
+class MyAppConfig(AppConfig):
+    def ready(self):
+        import shipit_watcher as wt
+        wt.setup(service_name="my-app", environment=os.getenv("ENV", "development"))
+```
+
+```python
+# FastAPI — lifespan
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    wt.setup(service_name="my-app")
+    yield
+    wt.flush()          # let queued exports finish
+```
+
+```python
+# Celery, RQ, a script — main(), or the worker-ready signal
+wt.setup(service_name="my-worker")
+```
+
+`setup()` registers a flush at exit, so a normal shutdown does not lose the
+last few traces. Call `wt.flush()` yourself where the process ends abruptly.
+
+---
+
+## Track everything, not just the model call
+
+An LLM call on its own does not explain an answer. These are the pieces —
+each one is a node in the agent graph, and the type comes from which helper
+you reach for, not from an extra argument.
+
+| You want to record | Call | Renders as |
+|---|---|---|
+| One unit of work | `wt.trace("chat.request", user_id=…)` | agent |
+| A tool the agent called | `with wt.tool("list_orders") as t:` | tool |
+| A RAG lookup, with provenance | `wt.retrieval("kb.search", query=…, chunks=[…])` | retriever |
+| A branch, **and the roads not taken** | `wt.decision("route", chosen=…, options=[…])` | chain |
+| Delegation to another agent | `wt.handoff(from_agent=…, to_agent=…)` | agent |
+| A guardrail firing | `wt.policy("pii_masking", blocked=False)` | guardrail |
+| An LLM call you make yourself | `with wt.generation("llm.answer", model=…)` | generation |
+| Arbitrary timing | `with wt.span("parse.invoice"):` | span |
+
+```python
+with wt.trace("support.turn",
+              user_id=user.email,
+              session_id=session.id,
+              company_id=str(company.id),
+              cost_center="support-ops",
+              channel="web") as ctx:
+
+    with wt.tool("list_orders") as tool:
+        tool.output = list_orders(company)
+
+    wt.retrieval("kb.search", query=question, knowledge_base="policies",
+                 chunks=[wt.RetrievedChunk(source="policy.pdf", score=0.94,
+                                           version="4", content_hash="9f2a1b")])
+
+    wt.decision("route.expert",
+                chosen="billing",
+                options=["billing", "support", "escalate"],
+                rationale="the question mentions an invoice",
+                confidence=0.87)
+
+    answer = client.chat.completions.create(model="gpt-4o", messages=messages)
+    ctx.set_output({"answer": answer.choices[0].message.content})
+
+    wt.score("user_feedback", 1, comment="helpful")
+```
+
+Everything inside attaches automatically — the context travels through
+`contextvars`, so it follows `await` boundaries and tasks without a `trace_id`
+threaded through anything.
+
+Or decorate, if that suits the code better:
+
+```python
+@wt.observe_agent("planner")      # opens a root trace
+async def run_agent(query): ...
+
+@wt.observe_tool("search_docs")   # records a tool invocation
+def search_docs(q): ...
+
+@wt.observe("summarise")          # a plain span
+def summarise(text): ...
+```
+
+Sync, async, generators and async generators are all handled. Generators are
+consumed *inside* the span — returning one unconsumed would record a 0 ms span
+that never sees the work or its errors.
+
+### Adding dimensions without touching call sites
+
+```python
+with wt.bind(company_id="acme", cost_center="support-ops"):
+    ...        # every event in here carries both
+```
+
+### Across a service boundary
+
+```python
+headers = wt.inject_trace_context()                       # sender
+with wt.trace("worker.handle", **wt.extract_trace_context(request.headers)):
+    ...                                                    # receiver
+```
+
+W3C Trace Context, so it works across HTTP, queues and workers — including
+with services that are not Watcher.
 
 ---
 
