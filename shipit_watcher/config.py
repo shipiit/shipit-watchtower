@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 __all__ = ["WatcherConfig", "configure", "get_config", "reset_config"]
 
@@ -27,6 +28,13 @@ def _env_bool(name: str, default: bool) -> bool:
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
     except ValueError:
         return default
 
@@ -50,6 +58,18 @@ class WatcherConfig:
     )
     release: str = field(default_factory=lambda: os.getenv("WATCHER_RELEASE", ""))
 
+    #: The project this process reports into — the unit of tenancy in the
+    #: Watcher dashboard, and the scope an API key is issued against.
+    #:
+    #: Several services and several environments routinely share one
+    #: dashboard; without a project on the wire, their traces land in one
+    #: undifferentiated pile that no filter can separate afterwards, because
+    #: the distinction was never recorded. Defaults to `default` so a single
+    #: -project deployment needs no configuration at all.
+    project: str = field(
+        default_factory=lambda: os.getenv("WATCHER_PROJECT", "default")
+    )
+
     # ── Master switch ────────────────────────────────────────────────
     enabled: bool = field(default_factory=lambda: _env_bool("WATCHER_ENABLED", True))
 
@@ -64,6 +84,72 @@ class WatcherConfig:
         default_factory=lambda: os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
     )
 
+    # ── Phoenix ──────────────────────────────────────────────────────
+    phoenix_collector_endpoint: str = field(
+        default_factory=lambda: os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "")
+    )
+    phoenix_base_url: str = field(
+        default_factory=lambda: os.getenv("PHOENIX_BASE_URL", "")
+    )
+    phoenix_api_key: str = field(
+        default_factory=lambda: os.getenv("PHOENIX_API_KEY", "")
+    )
+    phoenix_project: str = field(
+        default_factory=lambda: os.getenv("PHOENIX_PROJECT_NAME", "")
+    )
+
+    # ── LangSmith ────────────────────────────────────────────────────
+    langsmith_endpoint: str = field(
+        default_factory=lambda: os.getenv(
+            "LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"
+        )
+    )
+    langsmith_otel_endpoint: str = field(
+        default_factory=lambda: os.getenv("LANGSMITH_OTEL_ENDPOINT", "")
+    )
+    langsmith_api_key: str = field(
+        default_factory=lambda: os.getenv("LANGSMITH_API_KEY", "")
+    )
+    langsmith_project: str = field(
+        default_factory=lambda: os.getenv(
+            "LANGSMITH_PROJECT", os.getenv("LANGCHAIN_PROJECT", "default")
+        )
+    )
+
+    # ── Watcher dashboard ──────────────────────────────────────
+    dashboard_url: str = field(
+        default_factory=lambda: os.getenv("WATCHER_DASHBOARD_URL", "")
+    )
+    dashboard_token: str = field(
+        default_factory=lambda: os.getenv("WATCHER_DASHBOARD_TOKEN", "")
+    )
+
+    #: Explicit backend bundles. When empty, configured vendors are detected
+    #: from their environment variables. Kept as objects so applications can
+    #: install custom backends without teaching Watcher about their package.
+    backends: tuple[Any, ...] = ()
+    management_backend: str = field(
+        default_factory=lambda: os.getenv("WATCHER_MANAGEMENT_BACKEND", "")
+    )
+
+    @property
+    def resolved_management_backend(self) -> str:
+        explicit = self.management_backend.strip().lower()
+        if explicit:
+            return explicit
+        for bundle in self.backends:
+            if getattr(bundle, "prompts", None) is not None:
+                return str(getattr(bundle, "name", "custom")).lower()
+        if self.has_langfuse_credentials:
+            return "langfuse"
+        if self.has_phoenix_config:
+            return "phoenix"
+        if self.has_langsmith_credentials:
+            return "langsmith"
+        if self.dashboard_url:
+            return "dashboard"
+        return ""
+
     # ── Privacy ──────────────────────────────────────────────────────
     # On by default. Turning masking off is a deliberate, auditable act.
     mask_pii: bool = field(default_factory=lambda: _env_bool("WATCHER_MASK_PII", True))
@@ -72,12 +158,57 @@ class WatcherConfig:
     capture_content: bool = field(
         default_factory=lambda: _env_bool("WATCHER_CAPTURE_CONTENT", True)
     )
+    #: Explicit capture policy. Empty preserves the legacy mask_pii /
+    #: capture_content switches. Values: none, metadata, redacted, full.
+    content_policy: str = field(
+        default_factory=lambda: os.getenv("WATCHER_CONTENT_POLICY", "")
+    )
     max_content_chars: int = 50_000
+
+    @property
+    def effective_content_policy(self) -> str:
+        value = (self.content_policy or "").strip().lower()
+        if value in {"none", "metadata", "redacted", "full"}:
+            return value
+        if not self.capture_content:
+            return "metadata"
+        return "redacted" if self.mask_pii else "full"
 
     # ── Volume control ───────────────────────────────────────────────
     # Fraction of traces kept. Errors bypass sampling — see Tracer.
     sample_rate: float = field(
         default_factory=lambda: _env_float("WATCHER_SAMPLE_RATE", 1.0)
+    )
+    slow_trace_ms: float = field(
+        default_factory=lambda: _env_float("WATCHER_SLOW_TRACE_MS", 0.0)
+    )
+    expensive_trace_usd: float = field(
+        default_factory=lambda: _env_float("WATCHER_EXPENSIVE_TRACE_USD", 0.0)
+    )
+    tail_buffer_max_events: int = field(
+        default_factory=lambda: _env_int("WATCHER_TAIL_BUFFER_MAX_EVENTS", 1000)
+    )
+    #: How many sampled-out traces may hold a buffer at once.
+    #:
+    #: ``tail_buffer_max_events`` bounds one trace; this bounds the fleet of
+    #: them. Without it a process that opens traces faster than it closes them
+    #: — anything with abandoned streams or cancelled requests — grows by a
+    #: full event list per trace, and each list holds real payloads. The
+    #: oldest buffer is evicted, so tail-retention degrades to "recent traces
+    #: only" rather than to an outage.
+    tail_buffer_max_traces: int = field(
+        default_factory=lambda: _env_int("WATCHER_TAIL_BUFFER_MAX_TRACES", 500)
+    )
+
+    # ── Export reliability ──────────────────────────────────────
+    exporter_async: bool = field(
+        default_factory=lambda: _env_bool("WATCHER_EXPORTER_ASYNC", True)
+    )
+    exporter_queue_size: int = field(
+        default_factory=lambda: _env_int("WATCHER_EXPORTER_QUEUE_SIZE", 256)
+    )
+    exporter_max_retries: int = field(
+        default_factory=lambda: _env_int("WATCHER_EXPORTER_MAX_RETRIES", 3)
     )
 
     # ── Local ledger ─────────────────────────────────────────────────
@@ -124,6 +255,27 @@ class WatcherConfig:
         default_factory=lambda: os.getenv("WATCHER_GOVERNANCE", "audit")
     )
 
+    # ── Content guardrails ───────────────────────────────────────────
+    #: off | audit | block. Off by default: a guardrail that surprises people
+    #: by refusing traffic is one that gets disabled globally the same day.
+    #: Run `audit` against real traffic first — it records exactly what
+    #: `block` would have refused.
+    guardrail_mode: str = field(
+        default_factory=lambda: os.getenv("WATCHER_GUARDRAIL", "off")
+    )
+    #: Comma-separated detector names to enforce, e.g. `PESEL,NIP,IBAN`.
+    #: Empty means every detector. Narrowing is the supported way to guard
+    #: only what a jurisdiction actually requires.
+    guardrail_rules: str = field(
+        default_factory=lambda: os.getenv("WATCHER_GUARDRAIL_RULES", "")
+    )
+
+    @property
+    def guardrail_rule_set(self) -> frozenset[str] | None:
+        names = {part.strip().upper() for part in self.guardrail_rules.split(",")}
+        names.discard("")
+        return frozenset(names) or None
+
     # ── Gateway (LiteLLM proxy) ──────────────────────────────────────
     #: Forward attribution and prompt dimensions to a LiteLLM **proxy** in
     #: ``extra_body.metadata``.
@@ -167,14 +319,13 @@ class WatcherConfig:
     )
 
     # ── Langfuse transport ───────────────────────────────────────────
-    # sdk  — the classic ingestion API via the Langfuse client. Works on any
-    #        server version; every observation is a SPAN or a GENERATION.
-    # otlp — OpenTelemetry export. The only route that carries semantic
+    # otlp — OpenTelemetry export and the default. It carries semantic
     #        observation types (agent / tool / retriever / guardrail), which
-    #        is what makes Langfuse render the agent graph. Needs a v3 server;
-    #        does NOT need the v3 Python SDK.
+    #        is what makes Langfuse render the agent graph.
+    # sdk  — the legacy Langfuse ingestion API, retained as an explicit
+    #        compatibility option for older self-hosted installations.
     langfuse_transport: str = field(
-        default_factory=lambda: os.getenv("WATCHER_LANGFUSE_TRANSPORT", "sdk")
+        default_factory=lambda: os.getenv("WATCHER_LANGFUSE_TRANSPORT", "otlp")
     )
 
     # ── Datasets ─────────────────────────────────────────────────────
@@ -191,9 +342,24 @@ class WatcherConfig:
         return bool(self.langfuse_public_key and self.langfuse_secret_key)
 
     @property
+    def has_phoenix_config(self) -> bool:
+        return bool(self.phoenix_collector_endpoint or self.phoenix_base_url)
+
+    @property
+    def has_langsmith_credentials(self) -> bool:
+        return bool(self.langsmith_api_key)
+
+    @property
     def is_active(self) -> bool:
         """Whether anything should actually be emitted."""
-        return self.enabled and (self.has_langfuse_credentials or self.persist_to_database)
+        return self.enabled and (
+            self.has_langfuse_credentials
+            or self.has_phoenix_config
+            or self.has_langsmith_credentials
+            or bool(self.dashboard_url)
+            or self.persist_to_database
+            or bool(self.backends)
+        )
 
 
 _config: WatcherConfig | None = None
