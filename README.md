@@ -34,6 +34,7 @@ why it chose what it chose.
 - [Install](#install) — core, integrations, and prerequisites
 - [Quick start](#quick-start-sdk--ui) — SDK + real local UI
 - [Set up for your stack](#set-up-for-your-stack) — OpenAI, Anthropic, LiteLLM, LangGraph
+- [Full-system examples](examples/README.md) — runnable provider and agent-graph projects
 - [Track everything](#track-everything-not-just-the-model-call) — tools, retrievals, decisions
 - [Watcher dashboard](#watcher-dashboard--two-commands) — two commands
 - [Core concepts](#core-concepts)
@@ -574,6 +575,11 @@ unconsumed would record a 0 ms span and never see the real work or its errors.
 
 Every example below is complete. Pick the one that matches what you already
 use — the rest of the page is detail you can reach for later.
+
+For runnable end-to-end applications, see **[Full-system integration
+examples](examples/README.md)**. They cover LiteLLM, OpenAI, Anthropic,
+LangGraph/LangChain and custom/local models, including complete agent graphs,
+streaming, request context, tools, retrievals, decisions, scores and UI checks.
 
 The one line they all share:
 
