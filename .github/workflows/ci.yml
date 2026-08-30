@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,7 +30,34 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev,all]"
       - run: ruff check shipit_watcher
-      - run: pytest shipit_watcher/tests -q --cov=shipit_watcher --cov-report=term-missing
+      # mypy is a declared dev dependency and configured in pyproject, but
+      # nothing ran it — so the configuration was decoration.
+      - run: mypy shipit_watcher
+      # `--cov` without a floor is decoration too: coverage can slide from 76%
+      # to 60% under a green build. The floor ratchets up, never down.
+      - run: >
+          pytest shipit_watcher/tests -q
+          --cov=shipit_watcher --cov-report=term-missing --cov-fail-under=78
+
+  # The README claims the Python suite is complemented by dashboard linting, a
+  # type check and a production build. None of it was automated, so the claim
+  # described somebody's afternoon rather than the pipeline.
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
 
   # The package has to build on every change, not first at the tag. Broken
   # metadata discovered on release day blocks the release.
@@ -44,3 +71,8 @@ jobs:
       - run: pip install build twine
       - run: python -m build
       - run: twine check dist/*
+      # `twine check` validates metadata and README rendering only — it would
+      # not have noticed the missing py.typed marker that made the
+      # `Typing :: Typed` classifier a false claim.
+      - name: the typing marker actually ships
+        run: python -c "import zipfile,glob,sys; w=glob.glob('dist/*.whl')[0]; names=zipfile.ZipFile(w).namelist(); sys.exit(0 if 'shipit_watcher/py.typed' in names else 'py.typed missing from the wheel')"

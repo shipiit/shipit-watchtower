@@ -16,6 +16,8 @@ own view; a thread pool inherits a copy rather than racing.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -26,8 +28,10 @@ __all__ = [
     "TraceContext",
     "bind",
     "current_context",
+    "extract_trace_context",
     "get_parent_id",
     "get_trace_id",
+    "inject_trace_context",
     "use_prompt",
 ]
 
@@ -41,11 +45,20 @@ class TraceContext:
     """
 
     trace_id: str | None = None
+    root_span_id: str | None = None
     parent_id: str | None = None
+    #: Parent span received from another process via W3C Trace Context. Kept
+    #: separate from parent_id so local child events attach to this service's
+    #: root span rather than skipping directly to the upstream service.
+    remote_parent_id: str | None = None
     #: Nesting level. Carried on the context because an inner span completes
     #: before its parent is written, so depth cannot be derived from stored
     #: rows at write time.
     depth: int = 0
+    #: Whether this trace was selected for ordinary export. A sampled-out
+    #: trace still carries an id so callbacks and child work stay correlated;
+    #: events are suppressed until an error promotes the root trace.
+    sampled: bool = True
 
     # ── Business dimensions, carried onto every event ────────────────
     user_id: str | None = None
@@ -108,8 +121,14 @@ class TraceContext:
 # In a library whose whole purpose is per-tenant attribution and masking, that
 # is the worst possible place for a leak. `current_context()` now hands back a
 # fresh context each time nothing is bound, so there is no shared dict to fill.
+logger = logging.getLogger(__name__)
+
 _context: ContextVar[TraceContext | None] = ContextVar(
     "shipit_watcher_context", default=None
+)
+
+_TRACEPARENT = re.compile(
+    r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$", re.I
 )
 
 
@@ -128,6 +147,37 @@ def get_trace_id() -> str | None:
 
 def get_parent_id() -> str | None:
     return current_context().parent_id
+
+
+def inject_trace_context(headers: dict[str, str] | None = None) -> dict[str, str]:
+    """Inject W3C Trace Context into an HTTP/message header mapping."""
+    carrier = dict(headers or {})
+    context = current_context()
+    if not context.trace_id:
+        return carrier
+    trace_id = "".join(c for c in context.trace_id.lower() if c in "0123456789abcdef")
+    trace_id = trace_id[:32].rjust(32, "0")
+    parent = context.parent_id or context.root_span_id or trace_id[-16:]
+    parent = "".join(c for c in parent.lower() if c in "0123456789abcdef")
+    parent = parent[:16].rjust(16, "0")
+    carrier["traceparent"] = f"00-{trace_id}-{parent}-{'01' if context.sampled else '00'}"
+    return carrier
+
+
+def extract_trace_context(headers: dict[str, str]) -> dict[str, Any]:
+    """Return fields suitable for ``wt.trace(..., **fields)`` from W3C headers."""
+    raw = next(
+        (value for key, value in headers.items() if key.lower() == "traceparent"), ""
+    )
+    match = _TRACEPARENT.match(str(raw).strip())
+    if not match:
+        return {}
+    trace_id, parent_id, flags = match.groups()
+    return {
+        "trace_id": trace_id.lower(),
+        "remote_parent_id": parent_id.lower(),
+        "sampled": bool(int(flags, 16) & 1),
+    }
 
 
 @contextmanager
@@ -158,7 +208,30 @@ def bind(**fields: Any) -> Iterator[TraceContext]:
     try:
         yield updated
     finally:
-        _context.reset(token)
+        try:
+            _context.reset(token)
+        except ValueError:
+            # The token was created in a DIFFERENT contextvars Context than the
+            # one unwinding now, and `reset` refuses across Contexts.
+            #
+            # It happens whenever a generator that opened this block is closed
+            # by the garbage collector instead of by its own frame — an SSE
+            # response abandoned mid-stream is the usual way. The interpreter
+            # throws GeneratorExit into the `yield` from whatever Context the
+            # GC is running in, so `finally` executes somewhere `set()` never
+            # ran. Surfaced as three "Exception ignored in: <generator object
+            # Tracer.trace>" tracebacks per abandoned stream.
+            #
+            # Nothing needs undoing: the `set()` above only ever affected the
+            # Context that is already gone, and this one never held `updated`.
+            # Restoring `base` here would WRITE a value into a Context that
+            # never had ours — worse than doing nothing. So: do nothing, and
+            # say so at debug rather than tearing down a request over
+            # bookkeeping.
+            logger.debug(
+                "shipit-watcher: context token belonged to another Context; "
+                "nothing to restore", exc_info=True,
+            )
 
 
 @contextmanager

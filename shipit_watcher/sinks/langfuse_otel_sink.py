@@ -24,11 +24,12 @@ call the application uses in a dozen places. Requiring the v3 SDK would make
 "see the graph" a breaking dependency upgrade. Speaking the wire format keeps
 the two decoupled: the *server* is what has to be v3, and it already is.
 
-The classic sink stays the default. This one is opt-in::
+OTLP is Watcher's default. The classic sink remains available only for
+legacy self-hosted compatibility::
 
-    wt.configure(langfuse_transport="otlp")
+    wt.configure(langfuse_transport="sdk")
 
-or ``WATCHER_LANGFUSE_TRANSPORT=otlp``.
+or ``WATCHER_LANGFUSE_TRANSPORT=sdk``.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from typing import Any
 from ..config import get_config
 from ..context import TraceContext
 from ..events import Event, EventType, GenerationEvent, Severity
+from .delivery import DeliveryError, DeliveryWorker, explain_http_error
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,8 @@ __all__ = ["OBSERVATION_TYPES", "LangfuseOTLPSink"]
 #: today's behaviour rather than dropping the observation.
 OBSERVATION_TYPES: dict[EventType, str] = {
     EventType.GENERATION: "generation",
+    EventType.AGENT: "agent",
+    EventType.CHAIN: "chain",
     EventType.TOOL_INVOCATION: "tool",
     EventType.RETRIEVAL: "retriever",
     EventType.HANDOFF: "agent",       # delegation — the receiving agent's work
@@ -126,7 +130,8 @@ class LangfuseOTLPSink:
     graph is never drawn from a half-delivered tree.
     """
 
-    def __init__(self, endpoint: str | None = None, timeout: float = 5.0):
+    def __init__(self, endpoint: str | None = None, timeout: float = 5.0,
+                 background: bool | None = None):
         config = get_config()
         host = (endpoint or config.langfuse_host or "").rstrip("/")
         self._endpoint = f"{host}/api/public/otel/v1/traces" if host else ""
@@ -139,6 +144,24 @@ class LangfuseOTLPSink:
         self._lock = threading.Lock()
         self._pending: dict[str, list[dict[str, Any]]] = {}
         self._roots: dict[str, dict[str, Any]] = {}
+        self._max_open_traces = max(1, config.exporter_queue_size)
+
+        # The default transport used to POST synchronously from end_trace, so
+        # a lagging collector became the request's latency and an unreachable
+        # one stalled it for the full TCP timeout — while the config table
+        # promised "non-blocking OTLP delivery" and honoured
+        # `exporter_max_retries` only for Phoenix and LangSmith. Same worker,
+        # same guarantees, for every backend now.
+        use_background = config.exporter_async if background is None else background
+        self._delivery = DeliveryWorker(
+            # Late-bound on purpose: passing the bound method here would
+            # freeze it at construction, so a subclass override — or a test
+            # substituting the transport — would be silently ignored while
+            # the real one kept firing.
+            lambda spans: self._transmit(spans),
+            size=config.exporter_queue_size,
+            attempts=config.exporter_max_retries,
+        ) if use_background else None
 
     @property
     def available(self) -> bool:
@@ -159,11 +182,14 @@ class LangfuseOTLPSink:
             return
         config = get_config()
         with self._lock:
+            self._evict_locked()
             self._roots[trace_id] = {
                 "name": name,
                 "input": input_data,
                 "context": context,
-                "span_id": _hex_id(secrets.token_hex(8), _SPAN_ID_HEX),
+                "span_id": _hex_id(
+                    context.root_span_id or secrets.token_hex(8), _SPAN_ID_HEX
+                ),
                 "start_ns": None,
                 "attributes": [
                     _attr("langfuse.observation.type", "agent"),
@@ -173,6 +199,23 @@ class LangfuseOTLPSink:
                 ],
             }
             self._pending.setdefault(trace_id, [])
+
+    def _evict_locked(self) -> None:
+        """Drop the oldest open trace once too many are in flight.
+
+        A trace only leaves these maps through ``end_trace``. Anything that
+        prevents that — a process killed mid-turn, a sink attached to a tracer
+        that outlives its traces — would otherwise retain full input and
+        output payloads for the life of the process. Bounded, the failure mode
+        is losing the oldest unfinished trace instead of the whole process.
+        """
+        while len(self._roots) >= self._max_open_traces:
+            oldest = next(iter(self._roots))
+            self._roots.pop(oldest, None)
+            self._pending.pop(oldest, None)
+            logger.warning(
+                "watcher: too many unfinished traces; dropped %s", oldest
+            )
 
     def record(self, event: Event, context: TraceContext) -> None:
         if not self.available or not context.trace_id:
@@ -250,7 +293,7 @@ class LangfuseOTLPSink:
         start_ns = min(starts) if starts else now_ns
         end_ns = max(ends) if ends else now_ns
 
-        return {
+        span = {
             "traceId": _hex_id(trace_id, _TRACE_ID_HEX),
             "spanId": root["span_id"],
             "name": root["name"],
@@ -259,6 +302,9 @@ class LangfuseOTLPSink:
             "endTimeUnixNano": str(max(end_ns, start_ns)),
             "attributes": attributes,
         }
+        if context.remote_parent_id:
+            span["parentSpanId"] = _hex_id(context.remote_parent_id, _SPAN_ID_HEX)
+        return span
 
     def _build_span(self, event: Event, context: TraceContext,
                     root_span_id: str | None = None) -> dict[str, Any]:
@@ -349,6 +395,16 @@ class LangfuseOTLPSink:
     # -- transport ------------------------------------------------------
 
     def _send(self, trace_id: str, spans: list[dict[str, Any]]) -> None:
+        if self._delivery is not None:
+            self._delivery.submit(spans)
+            return
+        try:
+            self._transmit(spans)
+        except Exception:
+            # Observability must never take the request down with it.
+            logger.warning("watcher: otlp export failed", exc_info=True)
+
+    def _transmit(self, spans: list[dict[str, Any]]) -> None:
         config = get_config()
         payload = {
             "resourceSpans": [{
@@ -374,13 +430,20 @@ class LangfuseOTLPSink:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 if response.status >= 300:
-                    logger.warning("watcher: otlp export returned %s", response.status)
-        except urllib.error.HTTPError as exc:
-            logger.warning("watcher: otlp export failed %s: %s",
-                           exc.code, exc.read()[:300])
-        except Exception:
-            # Observability must never take the request down with it.
-            logger.warning("watcher: otlp export failed", exc_info=True)
+                    # Raise so the delivery worker retries: a 503 is usually a
+                    # collector restart, and dropping the trace for it leaves a
+                    # gap in the record that nobody can reconstruct.
+                    raise DeliveryError(explain_http_error(response.status, "Langfuse"))
+        except urllib.error.HTTPError as error:
+            raise DeliveryError(
+                explain_http_error(error.code, "Langfuse",
+                                   error.read().decode("utf-8", "replace")),
+            ) from error
+        except urllib.error.URLError as error:
+            raise DeliveryError(
+                f"could not reach Langfuse at {self._endpoint}: {error.reason}. "
+                f"Check LANGFUSE_HOST — it defaults to Langfuse Cloud.",
+            ) from error
 
     def record_score(self, score: Any) -> None:
         """Scores have no OTLP representation — they go over the REST API.
@@ -409,7 +472,11 @@ class LangfuseOTLPSink:
             }
             if score.observation_id:
                 payload["observation_id"] = _hex_id(score.observation_id, _SPAN_ID_HEX)
-            client.score(**{k: v for k, v in payload.items() if v is not None})
+            recorder: Any = getattr(client, "create_score", None)
+            if not callable(recorder):
+                legacy_client: Any = client
+                recorder = legacy_client.score
+            recorder(**{k: v for k, v in payload.items() if v is not None})
             client.flush()
         except Exception:
             logger.warning("watcher: otlp sink score failed", exc_info=True)
@@ -445,6 +512,18 @@ class LangfuseOTLPSink:
         for trace_id, spans in ready.items():
             if spans:
                 self._send(trace_id, spans)
+        if self._delivery is not None:
+            self._delivery.flush()
+
+    @property
+    def delivery_stats(self) -> dict[str, int]:
+        if self._delivery is None:
+            return {"delivered": 0, "failed": 0, "dropped": 0}
+        return {
+            "delivered": self._delivery.delivered,
+            "failed": self._delivery.failed,
+            "dropped": self._delivery.dropped,
+        }
 
 
 def _now_ns() -> int:

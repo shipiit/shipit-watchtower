@@ -44,8 +44,30 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from .backends import (
+    Backend,
+    BackendCapabilities,
+    LangSmithBackend,
+    PhoenixBackend,
+)
+from .budgets import (
+    BudgetAction,
+    BudgetExceeded,
+    BudgetState,
+    budget,
+    current_budget,
+    use_budget,
+)
 from .config import WatcherConfig, configure, get_config, reset_config
-from .context import TraceContext, bind, current_context, get_trace_id, use_prompt
+from .context import (
+    TraceContext,
+    bind,
+    current_context,
+    extract_trace_context,
+    get_trace_id,
+    inject_trace_context,
+    use_prompt,
+)
 from .datasets import (
     DatasetItem,
     ExperimentResult,
@@ -70,10 +92,13 @@ from .events import (
     Severity,
     ToolInvocationEvent,
 )
+from .guardrails import GuardrailViolation, check_content, guard
 from .identity import PromptIdentity, fingerprint_text, identify_prompt
 from .llm import GovernanceError, LLMClient, LLMResponse, complete, stream
 from .llm import run_prompt as run_prompt
 from .masking import MaskingPolicy, Redactor, mask_payload, mask_text
+from .middleware import WatcherASGIMiddleware, WatcherWSGIMiddleware
+from .pricing import ModelPrice, estimate_cost, get_model_price, set_model_price
 from .prompts import (
     ManagedPrompt,
     PromptRegistry,
@@ -82,6 +107,13 @@ from .prompts import (
     get_agent_prompt,
     get_prompt,
     get_registry,
+)
+from .replay import (
+    TraceBundle,
+    TraceBundleSink,
+    compare_bundles,
+    load_bundle,
+    replay_bundle,
 )
 from .scoring import (
     JUDGE_RUBRICS,
@@ -94,6 +126,7 @@ from .scoring import (
     record_score,
     score,
 )
+from .setup import BackendStatus, SetupReport, doctor, setup
 from .tracer import Tracer, get_tracer
 from .tracer import (
     decision as decision,
@@ -141,6 +174,28 @@ def trace(name: str, *, input: Any = None, **context_fields) -> Iterator[TraceCo
         yield context
 
 
+def instrument_openai() -> bool:
+    """Trace every OpenAI SDK call, including ones made inside libraries.
+
+    Patched on the SDK's own classes rather than on a client instance, so a
+    client constructed three layers down in a dependency is covered too.
+    ``wt.setup()`` calls this automatically when the SDK is installed.
+    """
+    from .instrumentation.openai import instrument
+
+    return instrument()
+
+
+def instrument_anthropic() -> bool:
+    """Trace every Anthropic SDK call, including streamed ones.
+
+    ``wt.setup()`` calls this automatically when the SDK is installed.
+    """
+    from .instrumentation.anthropic import instrument
+
+    return instrument()
+
+
 def instrument_litellm(*, replace_langfuse_callback: bool = True) -> bool:
     """Take ownership of LiteLLM call tracing.
 
@@ -153,6 +208,20 @@ def instrument_litellm(*, replace_langfuse_callback: bool = True) -> bool:
     return instrument(replace_langfuse_callback=replace_langfuse_callback)
 
 
+def langgraph_callback(tracer: Tracer | None = None):
+    """Create a Watcher callback for LangGraph or LangChain."""
+    from .instrumentation.langgraph import langgraph_callback as create_callback
+
+    return create_callback(tracer)
+
+
+def instrument_langgraph(graph: Any, tracer: Tracer | None = None):
+    """Attach Watcher tracing to a compiled LangGraph runnable."""
+    from .instrumentation.langgraph import instrument_langgraph as instrument
+
+    return instrument(graph, tracer)
+
+
 def flush() -> None:
     """Force delivery of buffered events. Call before a process exits."""
     get_tracer().flush()
@@ -160,6 +229,12 @@ def flush() -> None:
 
 __all__ = [
     "JUDGE_RUBRICS",
+    "Backend",
+    "BackendCapabilities",
+    "BackendStatus",
+    "BudgetAction",
+    "BudgetExceeded",
+    "BudgetState",
     # datasets & experiments
     "DatasetItem",
     "DecisionEvent",
@@ -170,16 +245,20 @@ __all__ = [
     "ExperimentResult",
     "GenerationEvent",
     "GovernanceError",
+    "GuardrailViolation",
     "HandoffEvent",
     "HumanReviewEvent",
     # LLM gateway
     "LLMClient",
     "LLMJudge",
     "LLMResponse",
+    "LangSmithBackend",
     # prompt registry
     "ManagedPrompt",
     # privacy
     "MaskingPolicy",
+    "ModelPrice",
+    "PhoenixBackend",
     "PolicyEvent",
     # prompt identity
     "PromptIdentity",
@@ -191,41 +270,61 @@ __all__ = [
     "Score",
     "ScoreDataType",
     "ScoreSource",
+    "SetupReport",
     "Severity",
     "ToolInvocationEvent",
+    "TraceBundle",
+    "TraceBundleSink",
     # context
     "TraceContext",
     # tracing
     "Tracer",
     # configuration
+    "WatcherASGIMiddleware",
     "WatcherConfig",
+    "WatcherWSGIMiddleware",
     "__version__",
     "add_item",
     "agent_dataset_name",
     "agent_prompt_name",
     "bind",
+    "budget",
     "capture",
+    "check_content",
+    "compare_bundles",
     "complete",
     "configure",
     "create_dataset",
     "create_prompt",
+    "current_budget",
     "current_context",
     "decision",
+    "doctor",
+    "estimate_cost",
     "evaluate",
+    "extract_trace_context",
     "fingerprint_text",
     "flush",
     "generation",
     "get_agent_prompt",
     "get_config",
     "get_items",
+    "get_model_price",
     "get_prompt",
     "get_registry",
     "get_trace_id",
     "get_tracer",
+    "guard",
     "handoff",
     "identify_prompt",
+    "inject_trace_context",
+    "instrument_anthropic",
+    "instrument_langgraph",
     # instrumentation
     "instrument_litellm",
+    "instrument_openai",
+    "langgraph_callback",
+    "load_bundle",
     "mask_payload",
     "mask_text",
     # decorators
@@ -234,14 +333,18 @@ __all__ = [
     "observe_tool",
     "policy",
     "record_score",
+    "replay_bundle",
     "reset_config",
     "retrieval",
     "run_experiment",
     "run_prompt",
     "score",
+    "set_model_price",
+    "setup",
     "span",
     "stream",
     "tool",
     "trace",
+    "use_budget",
     "use_prompt",
 ]

@@ -354,6 +354,7 @@ class TestDecorators:
 
         assert run() == "ok"
         assert sink.traces[0][1] == "agent.planner"
+        assert sink.ended[0][1] == "ok"
 
     def test_async_agent_decorator(self, installed_tracer, sink):
         @wt.observe_agent("aplanner")
@@ -362,6 +363,15 @@ class TestDecorators:
 
         assert asyncio.run(run()) == "ok"
         assert sink.traces[0][1] == "agent.aplanner"
+        assert sink.ended[0][1] == "ok"
+
+    def test_agent_decorator_can_disable_payload_capture(self, installed_tracer, sink):
+        @wt.observe_agent("private", capture_input=False, capture_output=False)
+        def run(secret):
+            return secret
+
+        assert run("do-not-record") == "do-not-record"
+        assert sink.ended[0][1] is None
 
     def test_decorator_reraises(self, installed_tracer, sink):
         @wt.observe("boom")

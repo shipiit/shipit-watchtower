@@ -284,7 +284,22 @@ def record_score(score_obj: Score) -> Score:
 
     Never raises: a scoring failure must not affect the request being scored.
     """
+    from .config import get_config
+    from .masking import mask_payload
     from .tracer import get_tracer
+
+    config = get_config()
+    policy = config.effective_content_policy
+    if policy == "none":
+        score_obj.comment = ""
+        score_obj.metadata = {}
+        if isinstance(score_obj.value, str):
+            score_obj.value = "[CONTENT_DISABLED]"
+    elif policy in {"metadata", "redacted"}:
+        score_obj.comment = mask_payload(score_obj.comment)
+        score_obj.metadata = mask_payload(score_obj.metadata)
+        if policy == "redacted" and isinstance(score_obj.value, str):
+            score_obj.value = mask_payload(score_obj.value)
 
     tracer = get_tracer()
     for sink in getattr(tracer.sink, "_sinks", []):

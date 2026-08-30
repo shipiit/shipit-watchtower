@@ -218,6 +218,57 @@ class TestLangfuseSink:
         sink.start_trace("t", "n", TraceContext(trace_id="t"))
         sink.flush()  # absorbed
 
+    def test_current_langfuse_v4_observation_api(self):
+        from shipit_watcher.sinks.langfuse_sink import LangfuseSink
+
+        class Observation:
+            def __init__(self, call):
+                self.call = call
+                self.children = []
+                self.updates = []
+                self.ended = 0
+
+            def start_observation(self, **kwargs):
+                child = Observation(kwargs)
+                self.children.append(child)
+                return child
+
+            def update(self, **kwargs):
+                self.updates.append(kwargs)
+
+            def end(self):
+                self.ended += 1
+
+        class Client:
+            def __init__(self):
+                self.roots = []
+
+            def start_observation(self, **kwargs):
+                root = Observation(kwargs)
+                self.roots.append(root)
+                return root
+
+            def flush(self):
+                pass
+
+        client = Client()
+        sink = LangfuseSink(client=client)
+        context = TraceContext(trace_id="a" * 32, remote_parent_id="b" * 16)
+        sink.start_trace("a" * 32, "agent.turn", context)
+        sink.record(
+            GenerationEvent(name="llm", model="gpt-4.1", total_cost=0.01).finish(),
+            context,
+        )
+        sink.end_trace("a" * 32, output="done")
+
+        root = client.roots[0]
+        assert root.call["as_type"] == "agent"
+        assert root.call["trace_context"]["trace_id"] == "a" * 32
+        assert root.children[0].call["as_type"] == "generation"
+        assert root.children[0].call["cost_details"] == {"total": 0.01}
+        assert root.updates[0]["output"] == "done"
+        assert root.ended == 1
+
 
 # ── LiteLLM instrumentation ──────────────────────────────────────────────
 
@@ -332,6 +383,83 @@ class TestLiteLLMInstrumentation:
         assert len(captured) == 1
         assert captured[0].model == "gpt-4o"
         assert captured[0].total_tokens == 30
+
+    def test_managed_generation_is_not_recorded_twice(self, fake_litellm):
+        """LiteLLM relocates metadata into `litellm_params` on some paths.
+
+        The guard read only `kwargs["metadata"]`, so on those paths
+        `LLMClient` recorded the generation *and* the global callback recorded
+        the same call into the same trace — doubling tokens and cost in the
+        ledger and in every backend. That is the duplicate this package
+        exists to prevent, one layer in.
+        """
+        import shipit_watcher.tracer as tmod
+        from shipit_watcher.instrumentation import litellm as inst
+        from shipit_watcher.tracer import Tracer
+
+        captured = []
+
+        class Sink:
+            def start_trace(self, *a, **k): pass
+            def end_trace(self, *a, **k): pass
+            def record(self, event, ctx): captured.append(event)
+            def flush(self): pass
+
+        tracer = Tracer(sinks=[Sink()])
+        previous, tmod._tracer = tmod._tracer, tracer
+        try:
+            handler = inst.WatcherLiteLLMHandler()
+            response = types.SimpleNamespace(
+                usage={"prompt_tokens": 10, "completion_tokens": 20}
+            )
+            with tracer.trace("req"):
+                handler.log_success_event(
+                    {
+                        "model": "gpt-4o",
+                        # the relocated shape, with no top-level metadata
+                        "litellm_params": {
+                            "metadata": {"_watcher_managed_generation": True}
+                        },
+                    },
+                    response, 1.0, 2.0,
+                )
+        finally:
+            tmod._tracer = previous
+
+        assert captured == []
+
+    def test_prompt_identity_survives_relocated_metadata(self, fake_litellm):
+        import shipit_watcher.tracer as tmod
+        from shipit_watcher.instrumentation import litellm as inst
+        from shipit_watcher.tracer import Tracer
+
+        captured = []
+
+        class Sink:
+            def start_trace(self, *a, **k): pass
+            def end_trace(self, *a, **k): pass
+            def record(self, event, ctx): captured.append(event)
+            def flush(self): pass
+
+        tracer = Tracer(sinks=[Sink()])
+        previous, tmod._tracer = tmod._tracer, tracer
+        try:
+            handler = inst.WatcherLiteLLMHandler()
+            with tracer.trace("req"):
+                handler.log_success_event(
+                    {
+                        "model": "gpt-4o",
+                        "litellm_params": {"metadata": {"watcher_prompt": {
+                            "prompt_name": "support-assistant",
+                            "prompt_version": "7",
+                        }}},
+                    },
+                    types.SimpleNamespace(usage={}), 1.0, 2.0,
+                )
+        finally:
+            tmod._tracer = previous
+
+        assert captured[0].prompt["prompt_name"] == "support-assistant"
 
     def test_call_outside_a_trace_gets_its_own_named_trace(self, fake_litellm):
         """Background work — reindexing, a nightly report — has no ambient

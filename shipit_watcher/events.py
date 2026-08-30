@@ -48,6 +48,8 @@ class EventType(StrEnum):
     """
 
     GENERATION = "generation"          # an LLM call
+    AGENT = "agent"                    # an agent or LangGraph node
+    CHAIN = "chain"                    # an orchestration chain/subgraph
     DECISION = "decision"              # a branch point, with alternatives
     TOOL_INVOCATION = "tool_invocation"
     RETRIEVAL = "retrieval"            # RAG lookup, with provenance
@@ -182,6 +184,7 @@ class ToolInvocationEvent(Event):
         return {
             **super().to_payload(),
             "tool_name": self.tool_name,
+            "arguments": self.arguments,
             "succeeded": self.succeeded,
             "error": self.error,
         }

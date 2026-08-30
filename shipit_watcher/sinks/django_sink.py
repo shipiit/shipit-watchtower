@@ -107,20 +107,12 @@ class DjangoSink:
         TraceEventRecord = _ledger_model(get_config().ledger_event_model)
 
         parent_event_id = event.parent_id or ""
-        # Resolve the FK when the parent happens to be stored already. Children
-        # normally finish *first* (an inner span completes before its parent),
-        # so a missing row here is the common case, not an error —
-        # ``parent_event_id`` still records the edge and ``stitch_parents``
-        # can fill the FK in afterwards.
-        parent_row = None
-        if parent_event_id:
-            parent_row = (
-                TraceEventRecord.objects
-                .filter(trace_id=context.trace_id or "", event_id=parent_event_id)
-                .only("id", "depth")
-                .first()
-            )
-
+        # No parent lookup here, deliberately. Children finish *first* — an
+        # inner span completes before its parent — so the query missed on
+        # essentially every event, costing one SELECT per event (a dozen per
+        # agent turn under persist_all_events) to learn nothing.
+        # ``parent_event_id`` records the edge either way, and
+        # ``stitch_parents`` resolves the whole trace in one pass afterwards.
         started_at = None
         if event.started_at:
             started_at = datetime.fromtimestamp(event.started_at, tz=UTC)
@@ -129,7 +121,6 @@ class DjangoSink:
             trace_id=str(context.trace_id or "")[:64],
             event_id=str(event.id)[:64],
             parent_event_id=str(parent_event_id)[:64],
-            parent=parent_row,
             # From the context: the parent row usually does not exist yet.
             depth=context.depth,
             name=str(event.name or "")[:255],
@@ -209,7 +200,14 @@ class DjangoSink:
         """
         TraceEventRecord = _ledger_model(get_config().ledger_event_model)
 
-        rows = list(TraceEventRecord.objects.filter(trace_id=trace_id))
+        # Only the columns the stitch needs: the rows carry input/output JSON
+        # blobs, and pulling a whole trace's payloads to set a foreign key is
+        # the kind of thing that turns a nightly job into an incident.
+        rows = list(
+            TraceEventRecord.objects
+            .filter(trace_id=trace_id)
+            .only("id", "event_id", "parent_event_id", "parent")
+        )
         by_event_id = {r.event_id: r for r in rows}
 
         linked = []

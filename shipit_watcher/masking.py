@@ -33,6 +33,8 @@ __all__ = [
     "MaskingPolicy",
     "Redactor",
     "default_redactor",
+    "detect",
+    "detect_in_payload",
     "mask_payload",
     "mask_text",
 ]
@@ -284,6 +286,55 @@ class Redactor:
 
 #: Shared default. Import this rather than constructing per call.
 default_redactor = Redactor()
+
+
+def detect(value: str, policy: MaskingPolicy | None = None) -> dict[str, int]:
+    """Which identifiers appear in *value*, and how many of each.
+
+    The same validated detectors that drive redaction, reporting instead of
+    rewriting — so a guardrail can decide whether to let content leave the
+    process without first destroying the evidence it would need to explain
+    the decision. Checksums still apply: an odometer reading is not a tax ID
+    here either.
+    """
+    rules = (policy or default_redactor.policy).rules()
+    found: dict[str, int] = {}
+    if not value:
+        return found
+    try:
+        text = value[:_MAX_TEXT]
+        for rule in rules:
+            _, hits = rule.redact(text, lambda name: f"[{name}]")
+            if hits:
+                found[rule.name] = hits
+    except Exception:  # pragma: no cover — detection must never raise
+        return {"DETECTION_FAILED": 1}
+    return found
+
+
+def detect_in_payload(value: Any, policy: MaskingPolicy | None = None) -> dict[str, int]:
+    """:func:`detect`, over a nested payload. Counts are summed across it."""
+    totals: dict[str, int] = {}
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > _MAX_DEPTH:
+            return
+        if isinstance(node, str):
+            for name, count in detect(node, policy).items():
+                totals[name] = totals.get(name, 0) + count
+        elif isinstance(node, Mapping):
+            for index, item in enumerate(node.values()):
+                if index >= _MAX_ITEMS:
+                    break
+                walk(item, depth + 1)
+        elif isinstance(node, (list, tuple, set)):
+            for index, item in enumerate(node):
+                if index >= _MAX_ITEMS:
+                    break
+                walk(item, depth + 1)
+
+    walk(value)
+    return totals
 
 
 def mask_text(value: str) -> str:

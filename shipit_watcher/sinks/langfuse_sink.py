@@ -91,6 +91,22 @@ class LangfuseSink:
         ])
 
         try:
+            # v4 style. Explicit trace context preserves Watcher's canonical
+            # id instead of letting the SDK create a second, disconnected one.
+            if hasattr(self._client, "start_observation"):
+                trace_context = {"trace_id": trace_id}
+                if context.remote_parent_id:
+                    trace_context["parent_span_id"] = context.remote_parent_id
+                trace = self._client.start_observation(
+                    trace_context=trace_context,
+                    name=name,
+                    as_type="agent",
+                    input=input_data,
+                    metadata={**metadata, "user_id": context.user_id,
+                              "session_id": context.session_id, "tags": tags},
+                )
+                self._traces[trace_id] = trace
+                return
             # v2 style — the version the host application pins today.
             trace = self._client.trace(
                 id=trace_id,
@@ -125,8 +141,15 @@ class LangfuseSink:
         try:
             if hasattr(trace, "update"):
                 trace.update(output=output, metadata=metadata or {})
-            elif hasattr(trace, "end"):
+            if hasattr(trace, "end"):
                 trace.end(output=output)
+        except TypeError:
+            # Langfuse v4 end() takes no output; it was already applied by
+            # update() above.
+            try:
+                trace.end()
+            except Exception:
+                logger.warning("watcher: langfuse end_trace failed", exc_info=True)
         except Exception:
             logger.warning("watcher: langfuse end_trace failed", exc_info=True)
 
@@ -202,7 +225,23 @@ class LangfuseSink:
         )
         target = trace if trace is not None else self._client
         handle = None
-        if hasattr(target, "generation"):
+        if hasattr(target, "start_observation"):
+            v4_kwargs = {
+                "name": event.name,
+                "as_type": "generation",
+                "model": getattr(event, "model", "") or None,
+                "input": event.input,
+                "output": event.output,
+                "metadata": payload,
+                "usage_details": usage,
+                "level": event.severity.value,
+                "status_message": event.status_message or None,
+            }
+            if getattr(event, "total_cost", 0):
+                v4_kwargs["cost_details"] = {"total": event.total_cost}
+            handle = target.start_observation(**v4_kwargs)
+            handle.end()
+        elif hasattr(target, "generation"):
             handle = target.generation(**kwargs)
         elif hasattr(target, "start_generation"):
             handle = target.start_generation(**kwargs)
@@ -222,7 +261,25 @@ class LangfuseSink:
         )
         target = trace if trace is not None else self._client
         span = None
-        if hasattr(target, "span"):
+        if hasattr(target, "start_observation"):
+            kinds = {
+                EventType.TOOL_INVOCATION: "tool",
+                EventType.RETRIEVAL: "retriever",
+                EventType.HANDOFF: "agent",
+                EventType.POLICY: "guardrail",
+                EventType.VALIDATION: "evaluator",
+                EventType.DECISION: "chain",
+            }
+            span = target.start_observation(
+                name=event.name,
+                as_type=kinds.get(event.type, "span"),
+                input=event.input,
+                output=event.output,
+                metadata=payload,
+                level=event.severity.value,
+                status_message=event.status_message or None,
+            )
+        elif hasattr(target, "span"):
             span = target.span(**kwargs)
         elif hasattr(target, "start_span"):
             span = target.start_span(**kwargs)
@@ -251,7 +308,11 @@ class LangfuseSink:
             }
             if score.observation_id:
                 payload["observation_id"] = score.observation_id
-            self._client.score(**{k: v for k, v in payload.items() if v is not None})
+            recorder: Any = getattr(self._client, "create_score", None)
+            if not callable(recorder):
+                legacy_client: Any = self._client
+                recorder = legacy_client.score
+            recorder(**{k: v for k, v in payload.items() if v is not None})
         except Exception:
             logger.warning("watcher: langfuse score failed", exc_info=True)
 

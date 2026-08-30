@@ -14,16 +14,27 @@ Design commitments:
   failures is useless precisely when it is needed. Error traces are always kept.
 * **Nothing raises out of the tracer.** If observability breaks, the request
   still succeeds.
+* **A cancelled or abandoned request is still a trace.** The handlers around
+  every ``yield`` catch ``BaseException``, not ``Exception``, because
+  ``asyncio.CancelledError`` and ``GeneratorExit`` are neither — and a client
+  disconnect, a request timeout, and an abandoned SSE stream all arrive as
+  one of those. Caught only as ``Exception``, they skipped both the error and
+  the success path: the trace was opened, never closed, never exported, and
+  its buffers were retained for the life of the process. The requests worth
+  investigating are exactly the ones that were disappearing. The exception is
+  recorded and re-raised untouched, as always.
 """
 
 from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 
 from .config import WatcherConfig, get_config
@@ -56,6 +67,8 @@ class Tracer:
         self._config = config
         self._explicit_sinks = sinks
         self._sink: FanOutSink | None = None
+        self._tail_buffers: dict[str, list[Event]] = {}
+        self._tail_lock = threading.Lock()
 
     # -- wiring ---------------------------------------------------------
 
@@ -74,18 +87,27 @@ class Tracer:
         config = self.config
         sinks: list[Sink] = []
 
+        # Explicit bundles win over environment discovery and may come from
+        # third-party packages. A bare Sink is accepted for convenience; a
+        # capability bundle exposes its trace backend under `.trace`.
+        for backend in config.backends:
+            candidate = getattr(backend, "trace", backend)
+            if candidate is not None:
+                sinks.append(candidate)
+
         if config.has_langfuse_credentials:
             try:
-                if (config.langfuse_transport or "sdk").lower() == "otlp":
+                backend_sink: Sink
+                if (config.langfuse_transport or "otlp").lower() == "otlp":
                     from .sinks.langfuse_otel_sink import LangfuseOTLPSink
 
-                    sink = LangfuseOTLPSink()
+                    backend_sink = LangfuseOTLPSink()
                 else:
                     from .sinks.langfuse_sink import LangfuseSink
 
-                    sink = LangfuseSink()
-                if sink.available:
-                    sinks.append(sink)
+                    backend_sink = LangfuseSink()
+                if getattr(backend_sink, "available", True):
+                    sinks.append(backend_sink)
             except Exception:
                 logger.warning("watcher: Langfuse sink unavailable", exc_info=True)
 
@@ -96,6 +118,42 @@ class Tracer:
                 sinks.append(DjangoSink())
             except Exception:
                 logger.warning("watcher: Django sink unavailable", exc_info=True)
+
+        if config.has_phoenix_config and not any(
+            type(s).__name__ == "PhoenixOTLPSink" for s in sinks
+        ):
+            try:
+                from .sinks.phoenix_sink import PhoenixOTLPSink
+
+                phoenix_sink: Any = PhoenixOTLPSink()
+                if phoenix_sink.available:
+                    sinks.append(phoenix_sink)
+            except Exception:
+                logger.warning("watcher: Phoenix sink unavailable", exc_info=True)
+
+        if config.has_langsmith_credentials and not any(
+            type(s).__name__ == "LangSmithOTLPSink" for s in sinks
+        ):
+            try:
+                from .sinks.langsmith_sink import LangSmithOTLPSink
+
+                langsmith_sink: Any = LangSmithOTLPSink()
+                if langsmith_sink.available:
+                    sinks.append(langsmith_sink)
+            except Exception:
+                logger.warning("watcher: LangSmith sink unavailable", exc_info=True)
+
+        if config.dashboard_url and not any(
+            type(s).__name__ == "DashboardSink" for s in sinks
+        ):
+            try:
+                from .sinks.dashboard_sink import DashboardSink
+
+                dashboard_sink: Any = DashboardSink()
+                if dashboard_sink.available:
+                    sinks.append(dashboard_sink)
+            except Exception:
+                logger.warning("watcher: dashboard sink unavailable", exc_info=True)
 
         if not sinks and config.environment == "development":
             sinks.append(ConsoleSink())
@@ -127,16 +185,62 @@ class Tracer:
             return False
         return random.random() < rate
 
-    def _prepare(self, value: Any) -> Any:
+    def _prepare(self, value: Any, *, content: bool = True) -> Any:
         """Apply the privacy policy to anything leaving the process."""
         config = self.config
-        if not config.capture_content:
+        policy = config.effective_content_policy
+        if policy == "none" or (policy == "metadata" and content):
             return None
-        if config.mask_pii:
+        if policy in {"metadata", "redacted"}:
             value = mask_payload(value)
         if isinstance(value, str) and len(value) > config.max_content_chars:
             return value[: config.max_content_chars] + "…[truncated]"
         return value
+
+    def _prepare_context(self, context: TraceContext) -> TraceContext:
+        """Sanitise caller-controlled context fields before a backend sees them."""
+        return replace(
+            context,
+            metadata=self._prepare(context.metadata, content=False) or {},
+            tags=self._prepare(context.tags, content=False) or [],
+        )
+
+    def _prepare_event(self, event: Event) -> Event:
+        """Apply the privacy boundary to every content-bearing event field.
+
+        Input/output were historically the only fields prepared centrally.
+        Typed payloads also contain free text (decision rationales, retrieved
+        snippets, policy reasons and tool errors), so sinks could otherwise
+        receive raw PII despite the process-wide masking guarantee.
+        """
+        event.input = self._prepare(event.input)
+        event.output = self._prepare(event.output)
+        event.status_message = self._prepare(event.status_message) or ""
+        event.metadata = self._prepare(event.metadata, content=False) or {}
+        event.tags = self._prepare(event.tags, content=False) or []
+
+        if isinstance(event, DecisionEvent):
+            event.chosen = self._prepare(event.chosen) or ""
+            event.options_considered = self._prepare(event.options_considered) or []
+            event.rationale = self._prepare(event.rationale) or ""
+        elif isinstance(event, ToolInvocationEvent):
+            event.arguments = self._prepare(event.arguments)
+            event.error = self._prepare(event.error) or ""
+        elif isinstance(event, RetrievalEvent):
+            event.query = self._prepare(event.query) or ""
+            event.knowledge_base = self._prepare(event.knowledge_base) or ""
+            for chunk in event.chunks:
+                chunk.source = self._prepare(chunk.source) or ""
+                chunk.version = self._prepare(chunk.version)
+                chunk.snippet = self._prepare(chunk.snippet) or ""
+        elif isinstance(event, HandoffEvent):
+            event.from_agent = self._prepare(event.from_agent) or ""
+            event.to_agent = self._prepare(event.to_agent) or ""
+            event.reason = self._prepare(event.reason) or ""
+        elif isinstance(event, PolicyEvent):
+            event.policy_name = self._prepare(event.policy_name) or ""
+            event.reason = self._prepare(event.reason) or ""
+        return event
 
     # -- traces ---------------------------------------------------------
 
@@ -151,12 +255,70 @@ class Tracer:
         Everything emitted inside the block attaches to this trace without
         being passed a handle.
         """
-        if not self.active or not self._should_sample():
+        remote_trace_id = context_fields.pop("trace_id", None)
+        remote_parent_id = context_fields.pop(
+            "remote_parent_id", context_fields.pop("parent_id", None)
+        )
+        upstream_sampled = context_fields.pop("sampled", True)
+
+        if not self.active:
             with bind(**context_fields) as context:
                 yield context
             return
 
-        trace_id = uuid.uuid4().hex
+
+        if not upstream_sampled or not self._should_sample():
+            # Keep an ambient id even when sampled out. Otherwise LiteLLM's
+            # callback sees "no trace" and creates a standalone generation,
+            # accidentally defeating sampling. If the body fails, promote a
+            # minimal error trace so sampling never hides failures.
+            trace_id = remote_trace_id or uuid.uuid4().hex
+            root_span_id = uuid.uuid4().hex[:16]
+            self._open_tail_buffer(trace_id)
+            with bind(trace_id=trace_id, root_span_id=root_span_id, parent_id=None,
+                      remote_parent_id=remote_parent_id,
+                      result={}, sampled=False,
+                      **context_fields) as context:
+                started = time.time()
+                try:
+                    yield context
+                except BaseException as exc:
+                    self._promote_tail_trace(
+                        trace_id, name, context, input,
+                        {"error": f"{type(exc).__name__}: {exc}"},
+                        duration_ms=int((time.time() - started) * 1000),
+                    )
+                    raise
+                else:
+                    duration_ms = int((time.time() - started) * 1000)
+                    with self._tail_lock:
+                        buffered = list(self._tail_buffers.get(trace_id, ()))
+                    costly = sum(
+                        event.total_cost for event in buffered
+                        if isinstance(event, GenerationEvent)
+                    )
+                    blocked = any(
+                        isinstance(event, PolicyEvent) and event.blocked
+                        for event in buffered
+                    )
+                    config = self.config
+                    slow = config.slow_trace_ms > 0 and duration_ms >= config.slow_trace_ms
+                    expensive = (
+                        config.expensive_trace_usd > 0
+                        and costly >= config.expensive_trace_usd
+                    )
+                    if blocked or slow or expensive:
+                        self._promote_tail_trace(
+                            trace_id, name, context, input,
+                            context.result.get("output"), duration_ms=duration_ms,
+                        )
+                    else:
+                        with self._tail_lock:
+                            self._tail_buffers.pop(trace_id, None)
+            return
+
+        trace_id = remote_trace_id or uuid.uuid4().hex
+        root_span_id = uuid.uuid4().hex[:16]
 
         # NOTE: no broad try/except around the yield. A generator-based context
         # manager may yield exactly once, so catching the body's exception here
@@ -171,17 +333,28 @@ class Tracer:
         # that showed up as background traces all carrying the last chat
         # answer, which is worse than a missing output: it is a confident
         # wrong one.
-        with bind(trace_id=trace_id, parent_id=None, result={},
+        # `sampled=True` is not redundant either. This trace was selected for
+        # export, but `bind` copies the *parent's* fields — so a sampled-in
+        # trace opened inside a sampled-out one inherited `sampled=False`,
+        # exported a root span with zero children, and left its tail buffer
+        # behind forever. Any deployment with sample_rate < 1.0 and nested
+        # traces (a LangGraph run inside a request, an experiment inside a
+        # job) hit it.
+        with bind(trace_id=trace_id, root_span_id=root_span_id, parent_id=None,
+                  remote_parent_id=remote_parent_id,
+                  result={}, sampled=True,
                   **context_fields) as context:
             try:
-                self.sink.start_trace(trace_id, name, context, self._prepare(input))
+                self.sink.start_trace(
+                    trace_id, name, self._prepare_context(context), self._prepare(input)
+                )
             except Exception:
                 logger.warning("watcher: start_trace failed", exc_info=True)
 
             started = time.time()
             try:
                 yield context
-            except Exception as exc:
+            except BaseException as exc:
                 self._safe_end_trace(
                     trace_id,
                     {"error": f"{type(exc).__name__}: {exc}"},
@@ -197,6 +370,18 @@ class Tracer:
                     duration_ms=int((time.time() - started) * 1000),
                 )
 
+    def _open_tail_buffer(self, trace_id: str) -> None:
+        """Start buffering a sampled-out trace, evicting the oldest if full."""
+        limit = max(1, self.config.tail_buffer_max_traces)
+        with self._tail_lock:
+            while len(self._tail_buffers) >= limit:
+                oldest = next(iter(self._tail_buffers))
+                self._tail_buffers.pop(oldest, None)
+                logger.debug(
+                    "watcher: tail buffer limit reached; dropped trace %s", oldest
+                )
+            self._tail_buffers[trace_id] = []
+
     def _safe_end_trace(self, trace_id: str, output: Any,
                         duration_ms: int = 0) -> None:
         try:
@@ -205,6 +390,28 @@ class Tracer:
             )
         except Exception:
             logger.warning("watcher: end_trace failed", exc_info=True)
+
+    def _promote_tail_trace(
+        self,
+        trace_id: str,
+        name: str,
+        context: TraceContext,
+        input_data: Any,
+        output: Any,
+        *,
+        duration_ms: int,
+    ) -> None:
+        """Export a previously sampled-out trace when its outcome merits it."""
+        promoted = self._prepare_context(replace(context, sampled=True))
+        with self._tail_lock:
+            buffered = self._tail_buffers.pop(trace_id, [])
+        try:
+            self.sink.start_trace(trace_id, name, promoted, self._prepare(input_data))
+            for event in buffered:
+                self.sink.record(event, promoted)
+        except Exception:
+            logger.warning("watcher: tail trace promotion failed", exc_info=True)
+        self._safe_end_trace(trace_id, output, duration_ms=duration_ms)
 
     # -- spans ----------------------------------------------------------
 
@@ -232,7 +439,7 @@ class Tracer:
             # Children of this span nest beneath it.
             with bind(parent_id=node.id, depth=context.depth + 1):
                 yield node
-        except Exception as exc:
+        except BaseException as exc:
             node.finish(severity=Severity.ERROR, status_message=f"{type(exc).__name__}: {exc}")
             self._emit(node, context)
             raise
@@ -254,10 +461,36 @@ class Tracer:
         """
         if not self.active or context.trace_id is None:
             return
+        prepared = self._prepare_event(event)
+        if not context.sampled:
+            with self._tail_lock:
+                # `get`, not `setdefault`. LiteLLM's streaming callback fires
+                # on another thread *after* the trace closed, and setdefault
+                # re-created a buffer nothing would ever pop — one permanent
+                # entry per sampled-out streaming request. A late event for a
+                # finished trace has nowhere to go, and dropping it is the
+                # honest outcome.
+                buffered = self._tail_buffers.get(context.trace_id)
+                if buffered is not None and len(buffered) < self.config.tail_buffer_max_events:
+                    buffered.append(prepared)
+            return
         try:
-            self.sink.record(event, context)
+            self.sink.record(
+                prepared, self._prepare_context(context)
+            )
         except Exception:
             logger.warning("watcher: record failed", exc_info=True)
+
+    def record_event(
+        self, event: Event, context: TraceContext | None = None
+    ) -> None:
+        """Record an event completed by a callback-based integration.
+
+        Callback frameworks open and close work in separate hooks, so they
+        cannot safely use a Python context manager. This public bridge keeps
+        those adapters on the same privacy, sampling, and delivery path.
+        """
+        self._emit(event, context or current_context())
 
     # -- typed helpers --------------------------------------------------
 
@@ -285,13 +518,16 @@ class Tracer:
         """A tool invocation. Marks itself failed if the block raises."""
         node = ToolInvocationEvent(name=f"tool.{tool_name}", tool_name=tool_name,
                                    arguments=self._prepare(arguments))
-        try:
-            with self.span(node.name, event=node, input=arguments, **metadata):
+        with self.span(node.name, event=node, input=arguments, **metadata):
+            try:
                 yield node
-        except Exception as exc:
-            node.succeeded = False
-            node.error = str(exc)
-            raise
+            except BaseException as exc:
+                # Set type-specific failure fields before span() serialises the
+                # event. Immediate sinks must not receive succeeded=True on an
+                # ERROR tool observation.
+                node.succeeded = False
+                node.error = str(exc)
+                raise
 
     def decision(self, name: str, *, chosen: str, options: list[str],
                  rationale: str = "", confidence: float | None = None) -> None:
@@ -325,12 +561,20 @@ class Tracer:
         node.finish()
         self._emit(node, current_context())
 
-    def policy(self, policy_name: str, *, blocked: bool = False, reason: str = "") -> None:
+    def policy(
+        self,
+        policy_name: str,
+        *,
+        blocked: bool = False,
+        reason: str = "",
+        **metadata: Any,
+    ) -> None:
         """Record a guardrail decision — the audit trail for enforce mode."""
         node = PolicyEvent(
             name=f"policy.{policy_name}", policy_name=policy_name,
             blocked=blocked, reason=reason,
             severity=Severity.WARNING if blocked else Severity.DEFAULT,
+            metadata=metadata,
         )
         node.parent_id = current_context().parent_id
         node.finish()
