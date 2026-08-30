@@ -1,7 +1,6 @@
 'use client';
 
 import { Menu, Moon, Sun } from 'lucide-react';
-import Link from 'next/link';
 import { CommandPalette, toggleTheme } from '@/components/command-palette';
 import { Breadcrumbs } from '@/components/shell/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -26,9 +25,6 @@ export function Topbar({ onOpenMobile }: { onOpenMobile: () => void }) {
         <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">
           <Sun size={15} className="dark:hidden" />
           <Moon size={15} className="hidden dark:block" />
-        </Button>
-        <Button variant="ghost" size="sm" asChild>
-          <Link href="/settings">Settings</Link>
         </Button>
       </div>
     </header>

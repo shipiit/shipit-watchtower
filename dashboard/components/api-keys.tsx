@@ -2,6 +2,10 @@
 
 import { Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { dateOnly } from '@/lib/utils';
 
 export interface ApiKeyRow {
   id: string;
@@ -13,7 +17,7 @@ export interface ApiKeyRow {
 }
 
 const when = (value: number | null) =>
-  value ? new Date(value * 1000).toLocaleDateString() : '—';
+  dateOnly(value);
 
 export function ApiKeys(
   { project = 'default', initialKeys = [] }:
@@ -68,7 +72,8 @@ export function ApiKeys(
   async function revoke(id: string) {
     setError('');
     try {
-      await fetch(`/api/keys?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const response = await fetch(`/api/keys?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(String(response.status));
       await load();
     } catch {
       setError('could not revoke the key');
@@ -76,25 +81,34 @@ export function ApiKeys(
   }
 
   return (
-    <article className="panel api-keys">
-      <div className="panel-title">
+    <Card>
+      <CardHeader>
         <div>
-          <h2>API keys</h2>
-          <p>Scoped to <strong>{project}</strong>. A key writes only into its own project.</p>
+          <CardTitle>API keys</CardTitle>
+          <CardDescription>
+            Scoped to <strong className="text-foreground">{project}</strong>. A key writes only into its own project.
+          </CardDescription>
         </div>
-        <KeyRound size={17} />
-      </div>
+        <span className="grid size-8 place-items-center rounded-md bg-muted text-foreground-tertiary">
+          <KeyRound size={16} />
+        </span>
+      </CardHeader>
+
+      <CardContent className="space-y-3">
 
       {issued ? (
-        <div className="key-issued" role="status">
-          <p>
+        <div className="rounded-md border border-primary-accent/30 bg-primary-accent/5 p-3" role="status">
+          <p className="text-xs text-muted-foreground">
             Copy <strong>{issued.name}</strong> now — it is stored as a hash and
             cannot be shown again.
           </p>
-          <div>
-            <code>{issued.key}</code>
-            <button
+          <div className="mt-2 flex min-w-0 items-center gap-2">
+            <code className="min-w-0 flex-1 overflow-x-auto rounded border border-border bg-code p-2 font-mono text-xs">
+              {issued.key}
+            </code>
+            <Button
               type="button"
+              variant="outline"
               onClick={() => {
                 void navigator.clipboard.writeText(issued.key);
                 setCopied(true);
@@ -103,57 +117,61 @@ export function ApiKeys(
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
               {copied ? 'Copied' : 'Copy'}
-            </button>
+            </Button>
           </div>
-          <pre>{`WATCHER_DASHBOARD_TOKEN=${issued.key}`}</pre>
-          <button type="button" className="dismiss" onClick={() => setIssued(null)}>
+          <pre className="mt-2 overflow-x-auto rounded border border-border bg-code p-2 font-mono text-xs">{`WATCHER_DASHBOARD_TOKEN=${issued.key}`}</pre>
+          <Button type="button" variant="ghost" size="sm" className="mt-2" onClick={() => setIssued(null)}>
             I have saved it
-          </button>
+          </Button>
         </div>
       ) : null}
 
-      <form className="key-create" onSubmit={create}>
-        <input
+      <form className="flex flex-col gap-2 sm:flex-row" onSubmit={create}>
+        <Input
           value={name}
           onChange={(event) => setName(event.target.value)}
           placeholder="What is this key for? e.g. production-api"
           aria-label="Key name"
         />
-        <button type="submit" disabled={busy || !name.trim()}>
+        <Button type="submit" variant="accent" disabled={busy || !name.trim()}>
           <Plus size={14} />Create key
-        </button>
+        </Button>
       </form>
 
-      {error ? <p className="login-error">{error}</p> : null}
+      {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
 
       {keys.length ? (
-        <div className="key-table">
-          <div className="key-row heading">
-            <span>Name</span><span>Key</span><span>Created</span><span>Last used</span><span />
-          </div>
-          {keys.map((key) => (
-            <div className={`key-row ${key.revoked_at ? 'revoked' : ''}`} key={key.id}>
-              <span>{key.name}</span>
-              <code>{key.prefix}…</code>
-              <span>{when(key.created_at)}</span>
-              {/* An unused key is the easiest one to decide about. */}
-              <span>{key.revoked_at ? 'revoked' : when(key.last_used_at)}</span>
-              <span>
-                {key.revoked_at ? null : (
-                  <button type="button" onClick={() => revoke(key.id)} aria-label={`Revoke ${key.name}`}>
-                    <Trash2 size={13} />
-                  </button>
-                )}
-              </span>
-            </div>
-          ))}
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="w-full min-w-[620px] text-left text-xs">
+            <thead className="border-b border-border bg-muted/40 text-foreground-tertiary">
+              <tr><th className="p-2.5">Name</th><th>Key</th><th>Created</th><th>Last used</th><th><span className="sr-only">Actions</span></th></tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {keys.map((key) => (
+                <tr className={key.revoked_at ? 'text-muted-foreground opacity-60' : ''} key={key.id}>
+                  <td className="p-2.5 font-bold text-foreground">{key.name}</td>
+                  <td><code className="font-mono">{key.prefix}…</code></td>
+                  <td>{when(key.created_at)}</td>
+                  <td>{key.revoked_at ? 'revoked' : when(key.last_used_at)}</td>
+                  <td className="pr-2 text-right">
+                    {key.revoked_at ? null : (
+                      <Button variant="ghost" size="icon-sm" type="button" onClick={() => revoke(key.id)} aria-label={`Revoke ${key.name}`}>
+                        <Trash2 size={13} />
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : (
-        <p className="key-empty">
+        <p className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
           No keys yet. Until one exists, ingestion falls back to the shared
           <code> WATCHER_INGEST_KEY</code>, which cannot say which project it is for.
         </p>
       )}
-    </article>
+      </CardContent>
+    </Card>
   );
 }

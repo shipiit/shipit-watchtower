@@ -40,10 +40,17 @@ export function TraceBrowser({ traces, observations, total, page, limit, view, a
         active={active}
         density={density}
         onDensity={setDensity}
+        columnsOpen={showColumns}
+        columnCount={columns.length}
         onToggleColumns={() => setShowColumns((open) => !open)}
       />
       <FilterChips active={active} />
-      {showColumns ? <ColumnPicker visible={columns} onChange={setColumns} /> : null}
+      <ColumnPicker
+        open={showColumns}
+        visible={columns}
+        onChange={setColumns}
+        onOpenChange={setShowColumns}
+      />
       <TraceDataTable
         rows={rows}
         columns={columns}

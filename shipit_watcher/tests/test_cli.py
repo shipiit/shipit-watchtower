@@ -78,6 +78,7 @@ def test_init_prints_a_template_that_names_the_next_step(capsys):
     assert main(["init"]) == 0
     output = capsys.readouterr().out
     assert "WATCHER_DASHBOARD_URL" in output
+    assert "http://localhost:3000" in output
     assert "wt.setup" in output
     assert "watcher connect" in output
 

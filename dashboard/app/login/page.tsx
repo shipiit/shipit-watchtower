@@ -27,7 +27,9 @@ export default function LoginPage() {
       // put it in the query string precisely so signing in returns you to the
       // page you asked for instead of the overview.
       const next = new URLSearchParams(window.location.search).get('next');
-      window.location.href = next && next.startsWith('/') ? next : '/';
+      // `//host/path` is protocol-relative, so startsWith('/') alone permits
+      // an open redirect after a successful sign-in.
+      window.location.href = next?.startsWith('/') && !next.startsWith('//') ? next : '/';
     } catch {
       setError('could not reach the dashboard');
     } finally {

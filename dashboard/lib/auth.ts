@@ -88,8 +88,10 @@ async function signingKey(): Promise<CryptoKey> {
 export async function passwordAccepted(candidate: string): Promise<boolean> {
   const expected = secret('WATCHER_DASHBOARD_PASSWORD');
   if (!expected) return false;
+  // Hash both values first so the comparison length is fixed as well as the
+  // work performed after each byte. Password length should not be observable.
   const encoder = new TextEncoder();
-  return sameBytes(encoder.encode(candidate), encoder.encode(expected));
+  return sameBytes(encoder.encode(await sha256(candidate)), encoder.encode(await sha256(expected)));
 }
 
 /** A cookie value of `<expires-at>.<hmac>`. Stateless: no session table. */

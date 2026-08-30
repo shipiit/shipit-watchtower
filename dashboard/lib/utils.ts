@@ -70,8 +70,27 @@ export function relative(epochSeconds: number | null | undefined): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
   if (seconds < 604_800) return `${Math.floor(seconds / 86_400)}d ago`;
-  return new Date(epochSeconds * 1000).toLocaleDateString();
+  return dateOnly(epochSeconds);
 }
 
-export const timestamp = (epochSeconds: number | null | undefined) =>
-  epochSeconds ? new Date(epochSeconds * 1000).toLocaleString() : '—';
+const pad2 = (value: number) => String(value).padStart(2, '0');
+
+/**
+ * Deterministic UTC dates for server-rendered client components.
+ *
+ * `toLocaleString()` uses the server locale during SSR and the user's locale
+ * during hydration. The same timestamp therefore produced different text and
+ * React discarded the trace table. UTC field formatting is identical in both
+ * runtimes and the suffix makes the timezone explicit.
+ */
+export function dateOnly(epochSeconds: number | null | undefined): string {
+  if (!epochSeconds) return '—';
+  const value = new Date(epochSeconds * 1000);
+  return `${value.getUTCFullYear()}-${pad2(value.getUTCMonth() + 1)}-${pad2(value.getUTCDate())}`;
+}
+
+export function timestamp(epochSeconds: number | null | undefined): string {
+  if (!epochSeconds) return '—';
+  const value = new Date(epochSeconds * 1000);
+  return `${dateOnly(epochSeconds)} ${pad2(value.getUTCHours())}:${pad2(value.getUTCMinutes())}:${pad2(value.getUTCSeconds())} UTC`;
+}

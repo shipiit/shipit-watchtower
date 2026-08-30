@@ -57,7 +57,7 @@ def _init() -> int:
     print("""# One of these is enough. Watcher fans out to every one you set.
 
 # Watcher's own dashboard — `cd dashboard && npm run setup` prints both values
-# WATCHER_DASHBOARD_URL=http://localhost:5173
+# WATCHER_DASHBOARD_URL=http://localhost:3000
 # WATCHER_DASHBOARD_TOKEN=
 
 # ...or a vendor you already use

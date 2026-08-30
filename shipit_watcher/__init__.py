@@ -97,6 +97,7 @@ from .identity import PromptIdentity, fingerprint_text, identify_prompt
 from .llm import GovernanceError, LLMClient, LLMResponse, complete, stream
 from .llm import run_prompt as run_prompt
 from .masking import MaskingPolicy, Redactor, mask_payload, mask_text
+from .middleware import WatcherASGIMiddleware, WatcherWSGIMiddleware
 from .pricing import ModelPrice, estimate_cost, get_model_price, set_model_price
 from .prompts import (
     ManagedPrompt,
@@ -279,7 +280,9 @@ __all__ = [
     # tracing
     "Tracer",
     # configuration
+    "WatcherASGIMiddleware",
     "WatcherConfig",
+    "WatcherWSGIMiddleware",
     "__version__",
     "add_item",
     "agent_dataset_name",

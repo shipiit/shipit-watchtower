@@ -4,7 +4,6 @@ export const tableStatements = [
   // single-project deployment never has to think about it.
   `CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL UNIQUE,
     created_at REAL NOT NULL
   )`,
@@ -99,7 +98,8 @@ export const tableStatements = [
   )`,
   `CREATE TABLE IF NOT EXISTS datasets (
     id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
+    project_id TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
     description TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at REAL NOT NULL,
@@ -140,6 +140,7 @@ export const tableStatements = [
  * ALTER has not added yet fails, and it would take the whole batch with it.
  */
 export const indexStatements = [
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_datasets_project_name ON datasets(project_id, name)`,
   `CREATE INDEX IF NOT EXISTS idx_traces_project_started ON traces(project_id, started_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_spans_project_type ON spans(project_id, event_type, started_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_scores_project_name ON scores(project_id, name, created_at DESC)`,

@@ -16,11 +16,15 @@ interface Props {
   view: string;
   active: Record<string, string>;
   density: Density;
+  columnsOpen: boolean;
+  columnCount: number;
   onDensity: (value: Density) => void;
   onToggleColumns: () => void;
 }
 
-export function TraceToolbar({ view, active, density, onDensity, onToggleColumns }: Props) {
+export function TraceToolbar({
+  view, active, density, columnsOpen, columnCount, onDensity, onToggleColumns,
+}: Props) {
   const range = active.range ?? '7d';
   const rangeLabel = RANGES.find(([value]) => value === range)?.[1] ?? 'Past 7 days';
 
@@ -70,8 +74,14 @@ export function TraceToolbar({ view, active, density, onDensity, onToggleColumns
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Button variant="outline" size="sm" onClick={onToggleColumns}>
-        <Columns3 size={14} />Columns
+      <Button
+        variant="outline"
+        size="sm"
+        aria-expanded={columnsOpen}
+        aria-controls="trace-column-settings"
+        onClick={onToggleColumns}
+      >
+        <Columns3 size={14} />Columns <span className="text-foreground-tertiary">{columnCount}</span>
       </Button>
 
       <Button variant="outline" size="sm" asChild>

@@ -12,7 +12,7 @@ Tracing · Agent graphs · Prompt governance · Cost allocation · PII masking
 [![Wheel](https://img.shields.io/pypi/wheel/shipit-watcher?color=9FD9FF)](https://pypi.org/project/shipit-watcher/#files)
 [![License](https://img.shields.io/pypi/l/shipit-watcher?color=9FD9FF)](LICENSE)
 
-`Python 3.11+` · zero required dependencies · framework-agnostic · 418 tests
+`Python 3.11+` · zero required dependencies · framework-agnostic · 427 tests
 
 ```bash
 pip install shipit-watcher
@@ -31,8 +31,8 @@ why it chose what it chose.
 ## Contents
 
 - [The problem](#the-problem)
-- [Install](#install)
-- [Quick start](#quick-start) — two lines
+- [Install](#install) — core, integrations, and prerequisites
+- [Quick start](#quick-start-sdk--ui) — SDK + real local UI
 - [Set up for your stack](#set-up-for-your-stack) — OpenAI, Anthropic, LiteLLM, LangGraph
 - [Track everything](#track-everything-not-just-the-model-call) — tools, retrievals, decisions
 - [Watcher dashboard](#watcher-dashboard--two-commands) — two commands
@@ -82,38 +82,125 @@ then adds the dimensions that let a trace answer a business question.
 
 ## Install
 
+Watcher requires **Python 3.11 or newer**. The local dashboard additionally
+requires **Node.js 22.13 or newer**. You do not need Node when exporting only
+to Langfuse, Phoenix or LangSmith.
+
+Install the dependency-free core inside the Python project you want to watch:
+
 ```bash
-pip install shipit-watcher            # core only, zero dependencies
-pip install shipit-watcher[all]       # + every backend and integration
+python -m pip install shipit-watcher
 ```
 
-Every integration degrades to a no-op when its library is absent, so the core
-is safe to import anywhere — including in a library that cannot dictate its
-host application's dependencies.
+Add only the integrations that project uses, or install everything:
+
+```bash
+python -m pip install "shipit-watcher[litellm]"
+python -m pip install "shipit-watcher[langgraph]"
+python -m pip install "shipit-watcher[langfuse]"
+python -m pip install "shipit-watcher[phoenix]"
+python -m pip install "shipit-watcher[langsmith]"
+python -m pip install "shipit-watcher[all]"
+```
+
+The OpenAI and Anthropic instrumentors use the SDK already installed by your
+application, so they do not need separate Watcher extras. Missing integrations
+remain inactive rather than making import or startup fail.
+
+| Goal | Install |
+|---|---|
+| Watch an existing OpenAI/Anthropic application | `shipit-watcher` |
+| Use the built-in Watcher UI | `shipit-watcher` + the dashboard steps below |
+| Use LiteLLM | `shipit-watcher[litellm]` |
+| Use LangGraph/LangChain callbacks | `shipit-watcher[langgraph]` |
+| Export to one vendor | the matching `langfuse`, `phoenix` or `langsmith` extra |
+| Enable every supported integration | `shipit-watcher[all]` |
 
 ---
 
-## Quick start
+## Quick start: SDK + UI
 
-Two lines. Whatever model SDK the application already uses keeps working,
-and every call it makes is now recorded:
+This is the complete local setup. It uses a real local D1 database, generates
+an ingest secret, sends an actual trace, and displays it in the UI.
+
+### 1. Start the dashboard
+
+Clone the repository once if you installed the Python package from PyPI:
+
+```bash
+git clone https://github.com/shipiit/shipit-watchtower.git
+cd shipit-watchtower/dashboard
+npm run setup
+npm run dev
+```
+
+If you already cloned this repository, start at `cd dashboard`. `npm run setup`
+installs dashboard dependencies when needed and creates an ignored
+`dashboard/.dev.vars` file containing the local ingest key. It is idempotent:
+running it again reuses the key instead of silently breaking connected apps.
+
+Open **http://localhost:3000**. The local dashboard is intentionally open; a
+deployed dashboard requires a password.
+
+### 2. Copy the connection values into your Python project
+
+`npm run setup` prints the exact token. Export these values in the shell that
+starts the watched application:
+
+```bash
+export WATCHER_DASHBOARD_URL=http://localhost:3000
+export WATCHER_DASHBOARD_TOKEN=<paste the token printed by npm run setup>
+export WATCHER_SERVICE=my-app
+export WATCHER_PROJECT=default
+export WATCHER_ENV=development
+export WATCHER_CONTENT_POLICY=redacted
+```
+
+For a `.env` file, use the same lines without `export` and make sure the host
+application actually loads that file; Watcher reads the process environment
+and does not install a competing dotenv loader.
+
+Do not commit the token. For team or production use, open **Settings & setup**
+in the dashboard and create a project-scoped `wtk_…` key. Its plaintext is
+shown once; replace `WATCHER_DASHBOARD_TOKEN` with that key.
+
+### 3. Configure Watcher once at application startup
 
 ```python
 import shipit_watcher as wt
 
-wt.setup(service_name="my-app", environment="production")
+report = wt.setup(service_name="my-app", environment="development")
+print(report)
 ```
 
-That is the whole integration. `setup()` looks at what is installed and
-instruments it — **LiteLLM, the OpenAI SDK, the Anthropic SDK** — patching the
-SDKs' own classes, so a client constructed three layers down inside a
-dependency you do not control is covered too. It then detects which backends
-are configured from the environment, rebuilds any lazily-created sinks, and
-registers a flush at exit.
+Keep the rest of the application unchanged. `setup()` discovers and
+instruments installed **OpenAI, Anthropic and LiteLLM** SDKs, detects all
+configured destinations, rebuilds lazy sinks and flushes queued exports at
+shutdown:
 
 ```python
-client = OpenAI()                          # unchanged
-client.chat.completions.create(...)        # traced, costed, attributed
+client = OpenAI()                           # unchanged application code
+client.chat.completions.create(...)         # now traced, costed and attributed
+```
+
+### 4. Send and verify the first real trace
+
+Run this from the same shell/environment that contains the variables above:
+
+```bash
+watcher doctor
+watcher connect
+```
+
+Open **Traces** and search for `watcher.connect`. If it appears, the
+SDK, authentication, ingest API and database are all connected. Then run one
+normal application request and refresh the page to see its real trace.
+
+If `watcher` is not on the shell path, use:
+
+```bash
+python -m shipit_watcher.cli doctor
+python -m shipit_watcher.cli connect
 ```
 
 ### Everything the agent did, not just the model call
@@ -287,13 +374,13 @@ vendor account:
 ```bash
 cd dashboard
 npm run setup     # installs, generates an ingest secret, prints your env
-npm run dev       # http://localhost:5173
+npm run dev       # http://localhost:3000
 ```
 
 `setup` prints the two variables the application needs, already filled in:
 
 ```bash
-WATCHER_DASHBOARD_URL=http://localhost:5173
+WATCHER_DASHBOARD_URL=http://localhost:3000
 WATCHER_DASHBOARD_TOKEN=<the secret it generated>
 ```
 
@@ -307,15 +394,21 @@ To put it on Cloudflare:
 npm run deploy    # creates the D1 database, uploads the secret, deploys
 ```
 
+The deploy command also generates/reuses `WATCHER_DASHBOARD_PASSWORD`, uploads
+it as a Worker secret, and prints the password needed for the first sign-in.
+It does not silently rotate either credential on subsequent deploys.
+
 Both commands are idempotent — `deploy` is also the redeploy command, and
 `setup` reports the existing secret rather than rotating it, because a setup
 script that quietly invalidates a running deployment's credentials is worse
 than one you have to read twice.
 
-> **⚠️ The dashboard has no authentication yet.** Every page and read API is
-> open to anyone who can reach the URL, and trace bodies contain whatever your
-> prompts and completions contain. Run it on localhost, behind a VPN, or
-> behind Cloudflare Access until this lands.
+The local dashboard is open by design. For a reachable deployment, set
+`WATCHER_DASHBOARD_PASSWORD`; the Worker then protects every page and human
+read API with a signed, 12-hour session cookie and fails closed if production
+has no password. Generate project-scoped write keys from **Settings & setup**.
+The plaintext is shown once and only its SHA-256 hash is stored. The legacy
+`WATCHER_INGEST_KEY` remains supported so upgrades do not interrupt delivery.
 
 #### What it shows
 
@@ -337,6 +430,59 @@ records.
 Delivery from the SDK is queued, bounded, retried with backoff, flushed at
 shutdown, and ordered so trace rows exist before the scores that reference
 them.
+
+#### First UI walkthrough
+
+1. Open **Overview** and choose the time range and environment. Every chart is
+   computed from stored traces; hover a line, point or bar for its exact value.
+2. Open **Traces**. Search names/IDs, switch between traces and observations,
+   combine server-side filters, change the time range, and paginate real rows.
+3. Select **Columns** to open the right-side column drawer. Toggle fields and
+   drag them into the preferred order; the browser remembers the layout.
+4. Click a trace row. The detail screen shows the observation tree and a
+   resizable inspector. Switch between **Graph**, **Timeline** and **Messages**,
+   then select any observation to inspect formatted input/output, metadata,
+   raw JSON, tokens, cost, latency, status and scores.
+5. Use **Sessions** to replay a conversation and **Users** to inspect activity,
+   consumption, latency, cost and quality for one identity.
+6. Use **Models**, **Costs & budgets** and **Backends** for provider/model usage,
+   spend allocation and exporter health.
+7. Use **Prompts**, **Datasets** and **Evaluations** to manage prompt versions,
+   captured examples, experiment runs and quality scores.
+8. Use **Policies** for governance signals and **Settings & setup** for
+   project-scoped keys and copy-ready SDK configuration. The UI initially
+   follows the system theme; use the moon/sun button to override it and `⌘K`
+   for navigation.
+
+| Page | Primary question it answers |
+|---|---|
+| Overview | Is traffic, latency, quality or cost changing? |
+| Traces | Exactly what happened during this request? |
+| Sessions | What happened across the full conversation? |
+| Users | Which users consume tokens and where do they struggle? |
+| Models | Which providers/models are used, slow or expensive? |
+| Prompts | Which prompt/version produced the result? |
+| Datasets | Which real cases can be replayed as an experiment? |
+| Evaluations | Are quality scores improving or regressing? |
+| Policies | Which guardrails fired or blocked execution? |
+| Costs & budgets | Where is spend allocated? |
+| Backends | Which destinations are configured and healthy? |
+
+The UI never fabricates demo rows. A blank page means no stored records match
+the current time range and filters. Run `watcher connect`, widen the time
+range, or clear active filter chips before troubleshooting charts.
+
+#### Common first-run fixes
+
+| Symptom | Check |
+|---|---|
+| `watcher connect` says no destination | Export `WATCHER_DASHBOARD_URL` and `WATCHER_DASHBOARD_TOKEN` in that shell |
+| Dashboard returns `401` on ingest | The app token must match `.dev.vars`, or use an active `wtk_…` key from Settings |
+| Dashboard opens but has no traces | Run `watcher connect`, select the current time range, then clear filters |
+| Model calls appear twice | Remove native LiteLLM/Langfuse callbacks and let Watcher own instrumentation |
+| Input/output is intentionally absent | Check `WATCHER_CONTENT_POLICY`; `none` and `metadata` omit content |
+| Port 3000 is busy | Run `npm run dev -- --port 3001` and update `WATCHER_DASHBOARD_URL` |
+| Process exits before delivery | Call `wt.flush()` in the shutdown hook or worker teardown |
 
 ### Cost budgets
 
@@ -439,6 +585,19 @@ wt.setup(service_name="my-app", environment="production")
 
 `setup()` looks at what is installed and instruments it. Nothing else in the
 application changes.
+
+| Project type | Put `setup()` here | Add a root request/turn trace with |
+|---|---|---|
+| FastAPI / Starlette / ASGI | lifespan/startup | `WatcherASGIMiddleware` |
+| Django | `AppConfig.ready()` | `WatcherWSGIMiddleware` in `wsgi.py` |
+| Flask / other WSGI | application factory | wrap `app.wsgi_app` |
+| LangGraph / LangChain | graph construction | `instrument_langgraph(graph)` |
+| Celery / RQ / worker | worker startup | `@observe_agent` on each job |
+| CLI / cron / script | `main()` | `with wt.trace(...)` |
+| Reusable library | host application startup | `@observe`, `@observe_tool` inside the library |
+
+Only initialise Watcher once per process. Middleware/decorators create traces
+for each request or job; they do not call `setup()` repeatedly.
 
 ### OpenAI SDK
 
@@ -582,6 +741,53 @@ async def lifespan(app: FastAPI):
     yield
     wt.flush()          # let queued exports finish
 ```
+
+Add request-level tracing once around the application. This opens the root
+trace that provider calls, LangGraph nodes, tools and retrievals attach to:
+
+```python
+# FastAPI / Starlette / any ASGI 3 app
+app.add_middleware(
+    wt.WatcherASGIMiddleware,
+    # Only map headers set by a trusted authentication proxy.
+    identity_headers={
+        "user_id": "x-authenticated-user-id",
+        "session_id": "x-session-id",
+        "company_id": "x-company-id",
+    },
+)
+```
+
+For identity resolved inside the application, use a resolver instead of
+trusting public headers:
+
+```python
+app.add_middleware(
+    wt.WatcherASGIMiddleware,
+    context_resolver=lambda scope, headers: {
+        "user_id": scope.get("state", {}).get("user_id"),
+        "tags": ["surface:api"],
+        "metadata": {"region": "eu"},
+    },
+)
+```
+
+WSGI applications use the same dependency-free instrumentation:
+
+```python
+# Flask
+app.wsgi_app = wt.WatcherWSGIMiddleware(app.wsgi_app)
+
+# Django — wsgi.py, after get_wsgi_application()
+application = wt.WatcherWSGIMiddleware(application)
+```
+
+Both middleware classes extract incoming W3C `traceparent`, keep streaming
+responses inside the trace, return `x-watcher-trace-id`, and exclude common
+health/readiness/metrics endpoints. They never capture bodies, cookies,
+authorization values, query strings, or arbitrary headers. Numeric, UUID and
+long-hex path segments are normalized to `{id}` in the trace name to prevent
+high-cardinality dashboards; the masked input still carries the request path.
 
 ```python
 # Celery, RQ, a script — main(), or the worker-ready signal
@@ -1374,7 +1580,7 @@ Everything below has a working default. Nothing else is required to start.
 | `WATCHER_EXPORTER_QUEUE_SIZE` | `256` | bounded traces waiting per exporter |
 | `WATCHER_EXPORTER_MAX_RETRIES` | `3` | exponential-backoff delivery attempts |
 | `WATCHER_DASHBOARD_URL` | — | Watcher dashboard origin; enables its trace sink |
-| `WATCHER_DASHBOARD_TOKEN` | — | bearer token matching the dashboard's `WATCHER_INGEST_KEY` |
+| `WATCHER_DASHBOARD_TOKEN` | — | project-scoped `wtk_…` bearer key from dashboard Settings; the legacy shared ingest key also works |
 | `WATCHER_PERSIST_DB` | `false` | enable the local ledger |
 | `WATCHER_PERSIST_ALL_EVENTS` | `false` | persist the whole tree |
 | `WATCHER_GOVERNANCE` | `audit` | `audit` / `warn` / `enforce` |
@@ -1441,7 +1647,7 @@ which is what removes the duplicates.
 pytest shipit_watcher/tests -q --cov=shipit_watcher --cov-report=term-missing
 ```
 
-**418 tests**, and CI runs them across Python 3.11–3.14 alongside `ruff`,
+**427 tests**, and CI runs them across Python 3.11–3.14 alongside `ruff`,
 `mypy`, and a coverage floor. A second job lints, type-checks and
 production-builds the dashboard, because a claim about quality that nothing
 enforces decays into a claim about somebody's afternoon.
@@ -1518,7 +1724,7 @@ Honest status, so nobody discovers a gap in production.
 | Content guardrails (refuse a call carrying a national ID) | ✅ `WATCHER_GUARDRAIL=audit\|block`, checksum-validated |
 | Auto-instrumentation of OpenAI and Anthropic SDKs | ✅ patched at class level, streaming included |
 | Model price table for models nobody prices | ✅ `wt.set_model_price()` / `WATCHER_MODEL_PRICES` |
-| Dashboard authentication and multi-tenancy | ❌ not built — run it behind your own access control today |
+| Dashboard authentication and project isolation | ✅ signed browser sessions; hashed, revocable project write keys across traces, scores, prompts, datasets and experiments |
 | OTLP *ingest* into the Watcher dashboard | ❌ not built — it accepts `watcher.trace.v1` only |
 | Online evaluation on live traffic, human annotation UI | ❌ not built — evaluators run where you call them |
 | Retention / TTL / deletion API | ❌ not built — the D1 database grows until you prune it |

@@ -129,6 +129,43 @@ try {
   );
 }
 
+// -- dashboard password -----------------------------------------------------
+// Production fails closed without this value, so a one-command deploy must
+// provision it rather than leave a healthy Worker returning 503 on every page.
+let dashboardPassword = '';
+if (existsSync(devVars)) {
+  dashboardPassword = readFileSync(devVars, 'utf8')
+    .match(/^WATCHER_DASHBOARD_PASSWORD=(.*)$/m)?.[1]?.trim() ?? '';
+}
+if (!dashboardPassword) {
+  dashboardPassword = randomBytes(24).toString('base64url');
+  const existing = existsSync(devVars)
+    ? `${readFileSync(devVars, 'utf8').trimEnd()}\n`
+    : '';
+  writeFileSync(
+    devVars,
+    `${existing}WATCHER_DASHBOARD_PASSWORD=${dashboardPassword}\n`,
+    { mode: 0o600 },
+  );
+  step('generated a dashboard password into .dev.vars');
+}
+try {
+  execSync(
+    `npx wrangler secret put WATCHER_DASHBOARD_PASSWORD --config ${JSON.stringify(generated)}`,
+    {
+      cwd: root,
+      input: `${dashboardPassword}\n`,
+      stdio: ['pipe', 'ignore', 'inherit'],
+    },
+  );
+  step('uploaded the dashboard password');
+} catch {
+  console.warn(
+    '\n  ! Could not upload WATCHER_DASHBOARD_PASSWORD. The dashboard will return 503 until you run:\n' +
+      `      npx wrangler secret put WATCHER_DASHBOARD_PASSWORD --config ${generated}\n`,
+  );
+}
+
 // -- deploy -----------------------------------------------------------------
 step('deploying');
 execSync(`npx wrangler deploy --config ${JSON.stringify(generated)}`, {
@@ -143,6 +180,10 @@ Point your application at the URL Wrangler printed above:
 
   WATCHER_DASHBOARD_URL=https://<the-url-above>
   WATCHER_DASHBOARD_TOKEN=${key}
+
+Sign in to that URL with:
+
+  ${dashboardPassword}
 
 The schema creates itself on the first trace, so there is nothing to migrate.
 `);

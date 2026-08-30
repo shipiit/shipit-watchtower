@@ -19,7 +19,7 @@ function hydrate(row: Record<string, unknown>) {
   };
 }
 
-export async function createPrompt(payload: Record<string, unknown>) {
+export async function createPrompt(payload: Record<string, unknown>, projectId = 'default') {
   await ensureSchema();
   const db = database();
   const id = randomId();
@@ -28,14 +28,14 @@ export async function createPrompt(payload: Record<string, unknown>) {
   // two concurrent publishes of the same prompt both compute n+1, and the
   // second violates UNIQUE(name, version) — a 500 on what is a legitimate
   // race, from a release script that may well run in parallel.
-  await db.prepare(`INSERT INTO prompt_versions (id, name, version, prompt_type,
+  await db.prepare(`INSERT INTO prompt_versions (id, project_id, name, version, prompt_type,
     template_json, labels_json, tags_json, config_json, commit_message, created_at)
-    SELECT ?, ?, COALESCE(MAX(version),0)+1, ?, ?, ?, ?, ?, ?, ?
-    FROM prompt_versions WHERE name=?`).bind(
-    id, payload.name, payload.type ?? 'text', encode(payload.prompt) ?? 'null',
+    SELECT ?, ?, ?, COALESCE(MAX(version),0)+1, ?, ?, ?, ?, ?, ?, ?
+    FROM prompt_versions WHERE project_id=? AND name=?`).bind(
+    id, projectId, payload.name, payload.type ?? 'text', encode(payload.prompt) ?? 'null',
     encode(payload.labels ?? []) ?? '[]', encode(payload.tags ?? []) ?? '[]',
     encode(payload.config ?? {}) ?? '{}', payload.commit_message ?? null, createdAt,
-    payload.name,
+    projectId, payload.name,
   ).run();
   const stored = await db.prepare('SELECT version FROM prompt_versions WHERE id=?')
     .bind(id).first<{ version: number }>();
@@ -52,44 +52,48 @@ export async function createPrompt(payload: Record<string, unknown>) {
   };
 }
 
-export async function listPrompts() {
+export async function listPrompts(projectId = 'default') {
   await ensureSchema();
   const result = await database().prepare(`SELECT p.*, counts.versions FROM prompt_versions p
-    JOIN (SELECT name, MAX(version) latest, COUNT(*) versions FROM prompt_versions GROUP BY name) counts
-    ON counts.name=p.name AND counts.latest=p.version ORDER BY p.created_at DESC`).all();
+    JOIN (SELECT project_id, name, MAX(version) latest, COUNT(*) versions FROM prompt_versions
+      WHERE project_id=? GROUP BY project_id, name) counts
+    ON counts.project_id=p.project_id AND counts.name=p.name AND counts.latest=p.version
+    WHERE p.project_id=? ORDER BY p.created_at DESC`).bind(projectId, projectId).all();
   return result.results.map(hydrate);
 }
 
-export async function getPromptVersion(name: string, version?: string, label?: string) {
+export async function getPromptVersion(
+  name: string, version?: string, label?: string, projectId = 'default',
+) {
   await ensureSchema();
   const db = database();
   let row;
   if (version) {
     row = await db.prepare(
-      'SELECT * FROM prompt_versions WHERE name=? AND version=?',
-    ).bind(name, Number(version)).first();
+      'SELECT * FROM prompt_versions WHERE project_id=? AND name=? AND version=?',
+    ).bind(projectId, name, Number(version)).first();
   }
   // Exact membership, not a substring: `LIKE '%"prod"%'` also matches a prompt
   // labelled `production`, so asking for one could serve the other.
   else if (label) {
     row = await db.prepare(`SELECT * FROM prompt_versions
-      WHERE name = ?
+      WHERE project_id = ? AND name = ?
         AND EXISTS (SELECT 1 FROM json_each(labels_json) WHERE value = ?)
-      ORDER BY version DESC LIMIT 1`).bind(name, label).first();
+      ORDER BY version DESC LIMIT 1`).bind(projectId, name, label).first();
   }
   else {
     row = await db.prepare(
-      'SELECT * FROM prompt_versions WHERE name=? ORDER BY version DESC LIMIT 1',
-    ).bind(name).first();
+      'SELECT * FROM prompt_versions WHERE project_id=? AND name=? ORDER BY version DESC LIMIT 1',
+    ).bind(projectId, name).first();
   }
   if (!row) return null;
   return { ...row, prompt: decode(String(row.template_json), null), labels: decode(String(row.labels_json), []), tags: decode(String(row.tags_json), []), config: decode(String(row.config_json), {}) };
 }
 
-export async function listPromptVersions(name: string) {
+export async function listPromptVersions(name: string, projectId = 'default') {
   await ensureSchema();
   const result = await database().prepare(
-    'SELECT * FROM prompt_versions WHERE name=? ORDER BY version DESC',
-  ).bind(name).all();
+    'SELECT * FROM prompt_versions WHERE project_id=? AND name=? ORDER BY version DESC',
+  ).bind(projectId, name).all();
   return result.results.map(hydrate);
 }

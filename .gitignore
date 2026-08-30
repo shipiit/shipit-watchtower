@@ -7,3 +7,4 @@ build/
 .coverage
 htmlcov/
 .venv/
+.playwright-mcp/

@@ -289,38 +289,6 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px var(--fo
 button, input, select { font: inherit; }
 a { color: inherit; text-decoration: none; }
 
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 236px 1fr; }
-.app-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 236px; padding: 23px 15px 17px; display: flex; flex-direction: column; color: #aaa6b3; background: var(--sidebar); border-right: 1px solid #292731; }
-.brand { height: 40px; padding: 0 8px; display: flex; align-items: center; gap: 8px; color: #efedf3; font-size: 16px; }
-.brand > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: white; font-weight: 800; background: linear-gradient(145deg, #937ef3, #5b43ce); }
-.brand em { color: #827d8b; font-style: normal; }
-.mobile-close { display: none; margin-left: auto; color: inherit; background: none; border: 0; }
-.app-sidebar nav { margin-top: 22px; }
-.app-sidebar nav section > p { margin: 19px 10px 7px; color: #6f6a79; font-size: 9px; font-weight: 750; letter-spacing: 1.2px; text-transform: uppercase; }
-.app-sidebar nav a, .sidebar-settings { height: 37px; padding: 0 10px; display: flex; align-items: center; gap: 11px; border-radius: 7px; font-weight: 530; }
-.app-sidebar nav a:hover, .app-sidebar nav a.active, .sidebar-settings:hover { color: white; background: var(--sidebar-hover); }
-.app-sidebar nav a.active { box-shadow: inset 2px 0 #8c76ef; }
-.sidebar-settings { margin-top: auto; }
-.workspace { margin-top: 10px; padding: 17px 8px 0; display: flex; align-items: center; gap: 10px; border-top: 1px solid #302e37; }
-.workspace > span, .avatar { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: #ddd9e4; background: #3a3743; font-size: 10px; font-weight: 750; }
-.workspace div { display: flex; flex-direction: column; gap: 2px; color: #e3e0e8; }
-.workspace small { color: #77727e; }
-
-.app-main { grid-column: 2; min-width: 0; }
-.app-topbar { position: sticky; top: 0; z-index: 20; height: 64px; padding: 0 28px; display: flex; align-items: center; background: color-mix(in srgb, var(--panel) 93%, transparent); border-bottom: 1px solid var(--border); backdrop-filter: blur(14px); }
-.mobile-menu { display: none; border: 0; background: none; color: var(--text-soft); }
-.environment, .system-health { display: flex; align-items: center; gap: 8px; font-weight: 620; }
-.environment i, .system-health i, .live-badge i { width: 7px; height: 7px; border-radius: 50%; background: #27b980; box-shadow: 0 0 0 3px var(--emerald-soft); }
-.environment span { color: var(--text-faint); }
-.global-search { width: min(410px, 35vw); height: 36px; margin: auto; padding: 0 10px; display: flex; align-items: center; gap: 8px; color: var(--text-faint); background: var(--panel-muted); border: 1px solid var(--border); border-radius: 8px; }
-.global-search input { min-width: 0; flex: 1; color: var(--text); background: transparent; border: 0; outline: 0; }
-.global-search kbd { padding: 2px 5px; color: var(--text-soft); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; font: 9px var(--font-geist-mono); }
-.topbar-actions { display: flex; align-items: center; gap: 8px; }
-.system-health { padding: 6px 10px; color: var(--emerald); background: var(--emerald-soft); border-radius: 16px; font-size: 10px; }
-.icon-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-soft); background: transparent; border: 0; border-radius: 7px; cursor: pointer; }
-.icon-button:hover { color: var(--text); background: var(--panel-muted); }
-.page-content { padding: 32px 30px 40px; }
-
 .page-header { margin-bottom: 24px; display: flex; align-items: flex-end; justify-content: space-between; }
 .page-header p { margin: 0 0 7px; color: var(--violet); font-size: 9px; font-weight: 780; letter-spacing: 1.35px; text-transform: uppercase; }
 .page-header h1 { margin: 0 0 5px; font-size: 28px; letter-spacing: -1px; line-height: 1.15; }
@@ -754,15 +722,6 @@ a { color: inherit; text-decoration: none; }
 }
 
 @media (max-width: 760px) {
-  .app-shell { display: block; }
-  .app-sidebar { transform: translateX(-100%); transition: transform .2s ease; }
-  .app-sidebar.open { transform: translateX(0); }
-  .mobile-close, .mobile-menu { display: grid; place-items: center; }
-  .app-main { display: block; }
-  .app-topbar { padding: 0 14px; gap: 8px; }
-  .environment, .system-health { display: none; }
-  .global-search { width: auto; margin: 0; flex: 1; }
-  .page-content { padding: 24px 15px 30px; }
   .page-header { display: block; }
   .page-actions { margin-top: 16px; }
   .connect-banner { align-items: flex-start; flex-wrap: wrap; }

@@ -25,8 +25,6 @@ export async function resolveProject(name: string): Promise<string> {
 }
 
 /** The project an API key belongs to, or null if it is unknown or revoked. */
-
-/** The project an API key belongs to, or null if it is unknown or revoked. */
 export async function projectForApiKey(key: string): Promise<string | null> {
   await ensureSchema();
   const db = database();

@@ -10,12 +10,12 @@ import { SESSION_COOKIE, passwordConfigured, sessionValid } from '@/lib/auth';
  * the more sensitive half: a trace contains whatever the prompt and the
  * completion contained.
  *
- * Ingest endpoints are exempt here because they authenticate differently,
+ * Machine endpoints are exempt here because they authenticate differently,
  * with a project-scoped API key rather than a browser session. They are not
  * unauthenticated — see `lib/ingest-auth.ts`.
  */
 
-const INGEST_PATHS = [
+const MACHINE_PATHS = [
   '/api/ingest', '/api/scores', '/api/datasets', '/api/dataset-items',
   '/api/experiments', '/api/prompts',
 ];
@@ -33,9 +33,9 @@ export default async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Machine writes carry their own credential and are checked by the route.
-  // Reads of those same paths still need a session, so the method matters.
-  if (request.method === 'POST' && INGEST_PATHS.some((path) => pathname.startsWith(path))) {
+  // SDK prompt and dataset reads use the same project key as writes. Every
+  // matching route performs its own key check before returning data.
+  if (MACHINE_PATHS.some((path) => pathname.startsWith(path))) {
     return NextResponse.next();
   }
 

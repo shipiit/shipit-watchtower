@@ -67,12 +67,12 @@ if (key) {
 console.log(`
 The dashboard is ready.
 
-  npm run dev       ->  http://localhost:5173
+  npm run dev       ->  http://localhost:3000
   npm run deploy    ->  Cloudflare, with a real D1 database
 
 Point your application at it. The same secret goes on both sides:
 
-  WATCHER_DASHBOARD_URL=http://localhost:5173
+  WATCHER_DASHBOARD_URL=http://localhost:3000
   WATCHER_DASHBOARD_TOKEN=${key}
 
 Then, in the application:
