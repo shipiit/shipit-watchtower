@@ -8,3 +8,6 @@ build/
 htmlcov/
 .venv/
 .playwright-mcp/
+.env
+.env.local
+.env.*.local
